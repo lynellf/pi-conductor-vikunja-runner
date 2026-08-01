@@ -1,0 +1,89 @@
+{
+  "$schema": "../.pi/roles/contracts/execution-state.schema.json",
+  "version": 1,
+  "task_id": "pi-conductor-vikunja-runner",
+  "source": {
+    "kind": "specification",
+    "path": "docs/pi-conductor-vikunja-runner-spec.md",
+    "revision": null
+  },
+  "status": "active",
+  "candidate_complete": false,
+  "active_slice": {
+    "id": "S-001",
+    "objective": "Establish a strict TypeScript configuration contract and validate the required Vikunja workflow layout.",
+    "source_refs": [
+      "§2 assumptions 4-6",
+      "§5.1 Bucket authority",
+      "§7 Configuration contract",
+      "§17 Module interfaces",
+      "§23 acceptance criteria 1 and 3"
+    ],
+    "acceptance_checks": [
+      {
+        "id": "S-001-A1",
+        "statement": "Configuration accepts the documented shape, uses numeric project IDs, rejects unknown fields, enforces version-1 concurrency, and applies the private-network HTTP rule.",
+        "evidence": "tests/config.test.ts: 5 passing tests; pnpm typecheck; pnpm build"
+      },
+      {
+        "id": "S-001-A2",
+        "statement": "Workflow validation requires exactly one named bucket for each required workflow name and enforces Backlog as default and Done as done bucket.",
+        "evidence": "tests/domain-layout.test.ts: 4 passing tests; pnpm test"
+      }
+    ],
+    "implementation_status": "ready-for-review",
+    "review_status": "not-reviewed",
+    "files_changed": [
+      "package.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "tsconfig.json",
+      "tsconfig.test.json",
+      "biome.json",
+      "config.example.yaml",
+      "src/config/config.ts",
+      "src/domain/types.ts",
+      "src/domain/layout.ts",
+      "src/index.ts",
+      "tests/config.test.ts",
+      "tests/domain-layout.test.ts"
+    ],
+    "tests_run": ["pnpm lint", "pnpm typecheck", "pnpm test", "pnpm build"],
+    "findings": []
+  },
+  "approved_slices": [],
+  "known_remaining": [
+    {
+      "source_ref": "§17 VikunjaGateway and §23 acceptance criteria 2-4",
+      "summary": "Implement validated, paginated Vikunja HTTP adapter and deterministic task eligibility/order/claiming."
+    },
+    {
+      "source_ref": "§14 Persistence and §23 acceptance criteria 5-6, 17",
+      "summary": "Implement SQLite migrations, job claims, idempotent milestones, and restart reconciliation."
+    },
+    {
+      "source_ref": "§8-§13 and §23 acceptance criteria 7-22",
+      "summary": "Implement repository, conductor/UI bridge, verification/publishing, telemetry, CLI, and operational adapters incrementally."
+    }
+  ],
+  "worktree": {
+    "branch": "main",
+    "baseline_commit": "581f5c291da73dea260711c384d573fb0f829f66d",
+    "preexisting_changes": [
+      {
+        "path": ".pi-conductor/",
+        "note": "Host-generated run/session artifacts; preserve."
+      },
+      {
+        "path": "docs/pi-conductor-vikunja-runner-spec.md",
+        "note": "Controlling specification supplied before this visit; preserve."
+      }
+    ],
+    "protected_paths": [
+      ".pi-conductor/",
+      "docs/pi-conductor-vikunja-runner-spec.md"
+    ]
+  },
+  "blocked_reason": null,
+  "updated_at": "2026-08-01T22:15:00Z"
+}

@@ -1,0 +1,33 @@
+version: 1
+
+vikunja:
+  base_url: "http://100.80.73.65:30111"
+  token_file: "/run/credentials/vikunja_api_token"
+  owner_user_id: 1
+  runner_user_id: 2
+  poll_interval_seconds: 30
+  waiting_poll_interval_seconds: 15
+  request_timeout_seconds: 10
+  allow_insecure_http: true
+
+runner:
+  data_dir: "/var/lib/pi-conductor-vikunja-runner"
+  global_concurrency: 1
+  agent_dir: "/var/lib/pi-conductor-vikunja-runner/pi-agent"
+  analytics_config_path: "/run/credentials/conductor-analytics.json"
+  max_comment_chars: 12000
+
+projects:
+  "42":
+    display_identifier: "PC"
+    kanban_view_id: 8
+    repository: "git@github.com:lynellf/pi-conductor.git"
+    default_branch: "main"
+    conductor_manifest: ".pi/conductor.yaml"
+    publish:
+      mode: "local"
+      remote: "origin"
+    verify_commands:
+      - ["pnpm", "typecheck"]
+      - ["pnpm", "test"]
+      - ["pnpm", "lint"]
