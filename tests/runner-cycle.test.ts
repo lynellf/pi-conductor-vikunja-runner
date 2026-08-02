@@ -1,0 +1,384 @@
+import { describe, expect, it, vi } from "vitest";
+import type {
+  ConductorGateway,
+  RunnerUiContext,
+} from "../src/conductor/gateway.js";
+import type { ProjectConfig } from "../src/config/config.js";
+import type { Job, JobStore } from "../src/domain/jobs.js";
+import { runPollCycle } from "../src/domain/runner.js";
+import {
+  bucketId,
+  type CodingTask,
+  commentId,
+  type ProjectLayout,
+  projectId,
+  taskId,
+  viewId,
+} from "../src/domain/types.js";
+import type { RepositoryManager } from "../src/repositories/git.js";
+import type { VikunjaGateway } from "../src/vikunja/gateway.js";
+
+const project: ProjectConfig = {
+  id: projectId(42),
+  displayIdentifier: "PC",
+  kanbanViewId: viewId(8),
+  repository: "git@example.test:owner/repo.git",
+  defaultBranch: "main",
+  conductorManifest: ".pi/conductor.yaml",
+  publish: { mode: "local", remote: "origin" },
+  verifyCommands: [["pnpm", "test"]],
+};
+
+const layout: ProjectLayout = {
+  viewId: viewId(8),
+  buckets: {
+    Backlog: { id: bucketId(1), title: "Backlog", position: 0 },
+    Ready: { id: bucketId(2), title: "Ready", position: 1 },
+    Running: { id: bucketId(3), title: "Running", position: 2 },
+    Waiting: { id: bucketId(4), title: "Waiting", position: 3 },
+    Review: { id: bucketId(5), title: "Review", position: 4 },
+    Failed: { id: bucketId(6), title: "Failed", position: 5 },
+    Done: { id: bucketId(7), title: "Done", position: 6 },
+  },
+  defaultBucketId: bucketId(1),
+  doneBucketId: bucketId(7),
+};
+
+const task: CodingTask = {
+  id: taskId(12),
+  projectId: project.id,
+  title: "Implement cycle",
+  description: "",
+  priority: 1,
+  position: 1,
+  bucketId: layout.buckets.Ready.id,
+  done: false,
+};
+
+const job: Job = {
+  id: "job-12" as Job["id"],
+  taskId: task.id,
+  projectId: project.id,
+  attempt: 1,
+  state: "claiming",
+  branch: "pi/vikunja-12-implement-cycle",
+  worktree: null,
+  conductorRunId: null,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  terminalErrorCode: null,
+};
+
+const dependencies = (ready = true) => {
+  const claimed = { ...job, state: "running" as const };
+  const getTask = vi
+    .fn<() => Promise<CodingTask>>()
+    .mockResolvedValueOnce(task)
+    .mockResolvedValue({ ...task, bucketId: layout.buckets.Running.id });
+  const validateProjectLayout = vi.fn(async () => layout);
+  const store = {
+    recordHeartbeat: vi.fn(async () => undefined),
+    recoverableJobs: vi.fn(async () => []),
+    tryClaim: vi.fn(async () => (ready ? job : null)),
+    transition: vi.fn(
+      async (
+        _id: Job["id"],
+        transition: Parameters<JobStore["transition"]>[1],
+      ) =>
+        transition.state === "failed"
+          ? {
+              ...claimed,
+              state: "failed" as const,
+              terminalErrorCode: transition.terminalErrorCode,
+            }
+          : claimed,
+    ),
+    getJob: vi.fn(async () => claimed),
+    recordTerminalFailure: vi.fn(
+      async (
+        _id: Job["id"],
+        terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      ) => ({ ...claimed, state: "failed" as const, terminalErrorCode }),
+    ),
+    getTask,
+    recordMutationIntent: vi.fn(async (input: { idempotencyKey: string }) => ({
+      id: "mutation-1",
+      ...input,
+      state: "pending",
+      remoteId: null,
+      error: null,
+      request: {},
+      operation: "post_comment",
+      jobId: job.id,
+      taskId: job.taskId,
+      createdAt: "",
+      updatedAt: "",
+    })),
+    completeMutation: vi.fn(async () => undefined),
+    recordMilestone: vi.fn(async (input: { idempotencyKey: string }) => ({
+      id: "milestone-1",
+      ...input,
+      jobId: job.id,
+      type: "claimed",
+      commentId: null,
+      deliveryState: "pending",
+      error: null,
+      createdAt: "",
+      updatedAt: "",
+    })),
+    recordMilestoneComment: vi.fn(async () => undefined),
+    recordCommentWatermark: vi.fn(async () => undefined),
+  } as unknown as JobStore;
+  const gateway = {
+    validateProjectLayout,
+    listReadyTasks: vi.fn(async () => (ready ? [task] : [])),
+    getTask,
+    moveTask: vi.fn(async () => undefined),
+    assignRunner: vi.fn(async () => undefined),
+    postComment: vi.fn(async () => commentId(101)),
+    listComments: vi.fn(async () => []),
+  } as unknown as VikunjaGateway;
+  return { store, gateway, getTask, validateProjectLayout };
+};
+
+const noopRepository = {} as RepositoryManager;
+const noopConductor = {} as ConductorGateway;
+const noopUi = {} as RunnerUiContext;
+
+describe("runPollCycle", () => {
+  it("executes the claimed job after re-reading its task and validated layout", async () => {
+    const { store, gateway, getTask, validateProjectLayout } = dependencies();
+    const execute = vi.fn(async () => ({
+      job: { ...job, state: "review" as const },
+      goal: "goal",
+      handle: {} as never,
+      verification: {} as never,
+      publish: {} as never,
+    }));
+
+    const report = await runPollCycle({
+      projects: { "42": project },
+      store,
+      gateway,
+      ownerUserId: 1 as never,
+      runnerUserId: 2 as never,
+      repository: noopRepository,
+      conductor: noopConductor as never,
+      uiForJob: () => noopUi,
+      execute,
+    });
+
+    expect(report.poll.claim?.status).toBe("claimed");
+    expect(store.recordHeartbeat).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({
+      job: { ...job, state: "running" },
+      task: { ...task, bucketId: layout.buckets.Running.id },
+      project,
+      layout,
+    });
+    expect(getTask).toHaveBeenCalledWith(task.id);
+    expect(validateProjectLayout).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves an owner override observed after claiming and skips execution", async () => {
+    const { store, gateway, getTask, validateProjectLayout } = dependencies();
+    const overriddenTask = {
+      ...task,
+      bucketId: layout.buckets.Done.id,
+      done: true,
+    };
+    getTask
+      .mockReset()
+      .mockResolvedValueOnce(task)
+      .mockResolvedValueOnce(overriddenTask);
+    const execute = vi.fn();
+
+    const report = await runPollCycle({
+      projects: { "42": project },
+      store,
+      gateway,
+      ownerUserId: 1 as never,
+      runnerUserId: 2 as never,
+      repository: noopRepository,
+      conductor: noopConductor as never,
+      uiForJob: () => noopUi,
+      execute,
+    });
+
+    expect(report.execution).toBeNull();
+    expect(execute).not.toHaveBeenCalled();
+    expect(validateProjectLayout).toHaveBeenCalledTimes(2);
+    expect(store.recordTerminalFailure).toHaveBeenLastCalledWith(
+      job.id,
+      "MANUAL_STATE_OVERRIDE",
+      [
+        expect.objectContaining({
+          operation: "post_comment",
+          idempotencyKey: `job:${job.id}:manual-state-override`,
+        }),
+      ],
+      "task state changed while the runner was active",
+    );
+    expect(gateway.moveTask).toHaveBeenCalledOnce();
+    expect(gateway.postComment).toHaveBeenLastCalledWith(
+      task.id,
+      expect.stringContaining("MANUAL_STATE_OVERRIDE"),
+    );
+  });
+
+  it("fails and reports a claimed job when its post-claim task refresh fails", async () => {
+    const { store, gateway, getTask } = dependencies();
+    getTask
+      .mockReset()
+      .mockResolvedValueOnce(task)
+      .mockRejectedValueOnce(new Error("Vikunja unavailable"))
+      .mockRejectedValueOnce(new Error("Vikunja unavailable"));
+    const execute = vi.fn();
+
+    await expect(
+      runPollCycle({
+        projects: { "42": project },
+        store,
+        gateway,
+        ownerUserId: 1 as never,
+        runnerUserId: 2 as never,
+        repository: noopRepository,
+        conductor: noopConductor as never,
+        uiForJob: () => noopUi,
+        execute,
+      }),
+    ).rejects.toThrow("Vikunja unavailable");
+
+    expect(store.recordTerminalFailure).toHaveBeenCalledWith(
+      job.id,
+      "VIKUNJA_UNAVAILABLE",
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "move_task",
+          request: { bucketId: 6, expectedBucketId: 3 },
+        }),
+        expect.objectContaining({
+          operation: "post_comment",
+          request: expect.objectContaining({
+            body: expect.stringContaining("VIKUNJA_UNAVAILABLE"),
+          }),
+        }),
+      ]),
+    );
+    expect(store.transition).toHaveBeenCalledTimes(1);
+    expect(gateway.postComment).toHaveBeenCalledWith(
+      task.id,
+      expect.stringContaining("VIKUNJA_UNAVAILABLE"),
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not claim a task after shutdown begins during polling", async () => {
+    const { store, gateway } = dependencies();
+    const controller = new AbortController();
+    let finishListing: ((tasks: CodingTask[]) => void) | undefined;
+    let listingStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      listingStarted = resolve;
+    });
+    gateway.listReadyTasks = vi.fn(
+      () =>
+        new Promise<CodingTask[]>((resolve) => {
+          finishListing = resolve;
+          listingStarted?.();
+        }),
+    );
+    const execute = vi.fn();
+    const pending = runPollCycle({
+      projects: { "42": project },
+      store,
+      gateway,
+      ownerUserId: 1 as never,
+      runnerUserId: 2 as never,
+      repository: noopRepository,
+      conductor: noopConductor as never,
+      uiForJob: () => noopUi,
+      execute,
+      signal: controller.signal,
+    });
+
+    await started;
+    controller.abort();
+    finishListing?.([task]);
+    const report = await pending;
+
+    expect(report.poll.claim).toBeNull();
+    expect(store.tryClaim).not.toHaveBeenCalled();
+    expect(gateway.moveTask).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not execute when no Ready task is claimed", async () => {
+    const { store, gateway } = dependencies(false);
+    const execute = vi.fn();
+
+    const report = await runPollCycle({
+      projects: { "42": project },
+      store,
+      gateway,
+      ownerUserId: 1 as never,
+      runnerUserId: 2 as never,
+      repository: noopRepository,
+      conductor: noopConductor as never,
+      uiForJob: () => noopUi,
+      execute,
+    });
+
+    expect(report.execution).toBeNull();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the heartbeat while a claimed execution is still active", async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, gateway } = dependencies();
+      let release: (() => void) | undefined;
+      const execute = vi.fn(
+        () =>
+          new Promise<{
+            job: Job;
+            goal: string;
+            handle: never;
+            verification: never;
+            publish: never;
+          }>((resolve) => {
+            release = () =>
+              resolve({
+                job: { ...job, state: "review" },
+                goal: "goal",
+                handle: undefined as never,
+                verification: undefined as never,
+                publish: undefined as never,
+              });
+          }),
+      );
+      const pending = runPollCycle({
+        projects: { "42": project },
+        store,
+        gateway,
+        ownerUserId: 1 as never,
+        runnerUserId: 2 as never,
+        repository: noopRepository,
+        conductor: noopConductor as never,
+        uiForJob: () => noopUi,
+        execute,
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(store.recordHeartbeat).toHaveBeenCalledTimes(2);
+      release?.();
+      await pending;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

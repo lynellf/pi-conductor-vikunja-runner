@@ -1,0 +1,733 @@
+import { describe, expect, it } from "vitest";
+import type { ConductorHandle } from "../src/conductor/gateway.js";
+import {
+  executePiComment,
+  startPiCommentMonitor,
+} from "../src/domain/control.js";
+import type { Job, JobStore } from "../src/domain/jobs.js";
+import {
+  commentId,
+  type ProjectLayout,
+  taskId,
+  userId,
+} from "../src/domain/types.js";
+import type { Milestone } from "../src/persistence/contracts.js";
+import type { VikunjaGateway } from "../src/vikunja/gateway.js";
+
+const job: Job = {
+  id: "job-1" as Job["id"],
+  taskId: taskId(12),
+  projectId: 42 as Job["projectId"],
+  attempt: 1,
+  state: "running",
+  branch: "pi/vikunja-12-task",
+  worktree: "/tmp/worktree",
+  conductorRunId: "run-1",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  terminalErrorCode: null,
+};
+
+const layout: ProjectLayout = {
+  viewId: 8 as never,
+  buckets: {
+    Backlog: { id: 1 as never, title: "Backlog", position: 0 },
+    Ready: { id: 2 as never, title: "Ready", position: 1 },
+    Running: { id: 3 as never, title: "Running", position: 2 },
+    Waiting: { id: 4 as never, title: "Waiting", position: 3 },
+    Review: { id: 5 as never, title: "Review", position: 4 },
+    Failed: { id: 6 as never, title: "Failed", position: 5 },
+    Done: { id: 7 as never, title: "Done", position: 6 },
+  },
+  defaultBucketId: 1 as never,
+  doneBucketId: 7 as never,
+};
+
+const handle = (calls: string[]): ConductorHandle =>
+  ({
+    runId: "run-1",
+    async completion() {
+      return {} as never;
+    },
+    async abort(reason?: string) {
+      calls.push(`abort:${reason ?? ""}`);
+    },
+    async steer(message: string) {
+      calls.push(`steer:${message}`);
+    },
+    async followUp() {
+      return undefined;
+    },
+    latestResponse() {
+      return "";
+    },
+    runStats() {
+      return {} as never;
+    },
+  }) as ConductorHandle;
+
+const makeDeps = () => {
+  const calls: string[] = [];
+  const comments: string[] = [];
+  const milestones = new Map<string, Milestone>();
+  const store = {
+    async getJob() {
+      return job;
+    },
+    async getMilestone(_jobId: Job["id"], key: string) {
+      return milestones.get(key) ?? null;
+    },
+    async recordMilestone(input: {
+      jobId: Job["id"];
+      type: Milestone["type"];
+      idempotencyKey: string;
+    }) {
+      const existing = milestones.get(input.idempotencyKey);
+      if (existing) return existing;
+      const value = {
+        id: `milestone-${milestones.size}` as Milestone["id"],
+        ...input,
+        commentId: null,
+        deliveryState: "pending",
+        error: null,
+        createdAt: "",
+        updatedAt: "",
+      } as Milestone;
+      milestones.set(input.idempotencyKey, value);
+      return value;
+    },
+    async recordMilestoneComment(
+      id: Milestone["id"],
+      remoteId: ReturnType<typeof commentId>,
+    ) {
+      for (const [key, milestone] of milestones) {
+        if (milestone.id !== id) continue;
+        if (milestone.deliveryState !== "pending") {
+          throw new Error(`milestone ${id} is no longer pending`);
+        }
+        milestones.set(key, {
+          ...milestone,
+          commentId: remoteId,
+          deliveryState: "delivered",
+        });
+      }
+      return [...milestones.values()].find(
+        (milestone) => milestone.id === id,
+      ) as Milestone;
+    },
+    async failMilestone(id: Milestone["id"], error: string) {
+      for (const [key, milestone] of milestones) {
+        if (milestone.id === id) {
+          milestones.set(key, {
+            ...milestone,
+            deliveryState: "failed",
+            error,
+          });
+        }
+      }
+      return [...milestones.values()].find(
+        (milestone) => milestone.id === id,
+      ) as Milestone;
+    },
+    async recordMutationIntent(input: { idempotencyKey: string }) {
+      return {
+        id: "mutation-1",
+        ...input,
+        state: "pending",
+        remoteId: null,
+        error: null,
+        request: {},
+        operation: "post_comment",
+        jobId: job.id,
+        taskId: job.taskId,
+        createdAt: "",
+        updatedAt: "",
+      } as never;
+    },
+    async completeMutation() {
+      return {} as never;
+    },
+  } as unknown as JobStore;
+  const gateway = {
+    async postComment(_taskId: ReturnType<typeof taskId>, body: string) {
+      comments.push(body);
+      return commentId(101);
+    },
+  } as unknown as VikunjaGateway;
+  return { calls, comments, milestones, store, gateway };
+};
+
+describe("executePiComment", () => {
+  it("steers a running handle and emits one durable acknowledgement", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const input = {
+      job,
+      commentId: commentId(20),
+      action: { kind: "steer", message: "focus on the failing test" } as const,
+      handle: handle(calls),
+      store: deps.store,
+      gateway: deps.gateway,
+    };
+
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+    expect(calls).toEqual(["steer:focus on the failing test"]);
+    expect(deps.comments).toHaveLength(1);
+    expect(deps.comments[0]).toContain(
+      "idempotency:job:job-1:comment:20:steer",
+    );
+  });
+
+  it("records steering dispatch durably before invoking the handle", async () => {
+    const deps = makeDeps();
+    const key = "job:job-1:comment:27:steer";
+    let persistedBeforeDispatch = false;
+    const dispatchAwareHandle = {
+      ...handle([]),
+      async steer() {
+        persistedBeforeDispatch =
+          (await deps.store.getMilestone(job.id, key)) !== null;
+      },
+    } as ConductorHandle;
+
+    await executePiComment({
+      job,
+      commentId: commentId(27),
+      action: { kind: "steer", message: "dispatch once" },
+      handle: dispatchAwareHandle,
+      store: deps.store,
+      gateway: deps.gateway,
+    });
+
+    expect(persistedBeforeDispatch).toBe(true);
+  });
+
+  it("does not replay steering after an ambiguous dispatch interruption", async () => {
+    const deps = makeDeps();
+    let dispatches = 0;
+    const interruptedHandle = {
+      ...handle([]),
+      async steer() {
+        dispatches += 1;
+        throw new Error("process interrupted after dispatch");
+      },
+    } as ConductorHandle;
+    const input = {
+      job,
+      commentId: commentId(28),
+      action: { kind: "steer", message: "apply exactly once" } as const,
+      handle: interruptedHandle,
+      store: deps.store,
+      gateway: deps.gateway,
+    };
+
+    await expect(executePiComment(input)).rejects.toThrow(
+      "process interrupted after dispatch",
+    );
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+
+    expect(dispatches).toBe(1);
+    expect(deps.comments).toHaveLength(1);
+  });
+
+  it("keeps a failed steering acknowledgement retryable", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    let attempts = 0;
+    const input = {
+      job,
+      commentId: commentId(25),
+      action: { kind: "steer", message: "retry acknowledgement" } as const,
+      handle: handle(calls),
+      store: deps.store,
+      gateway: {
+        async postComment(_taskId: ReturnType<typeof taskId>, body: string) {
+          attempts += 1;
+          if (attempts === 1) throw new Error("temporary comment failure");
+          deps.comments.push(body);
+          return commentId(103);
+        },
+      },
+    };
+
+    await expect(executePiComment(input)).rejects.toThrow(
+      "temporary comment failure",
+    );
+    expect([...deps.milestones.values()][0]?.deliveryState).toBe("pending");
+
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+    expect(calls).toEqual(["steer:retry acknowledgement"]);
+    expect(attempts).toBe(2);
+    expect([...deps.milestones.values()][0]).toMatchObject({
+      deliveryState: "delivered",
+      commentId: commentId(103),
+    });
+  });
+
+  it("deduplicates an acknowledgement accepted before its response was lost", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    let postAttempts = 0;
+    const input = {
+      job,
+      commentId: commentId(30),
+      action: { kind: "steer", message: "acknowledge once" } as const,
+      handle: handle(calls),
+      store: deps.store,
+      gateway: {
+        async listComments() {
+          return deps.comments.map((body, index) => ({
+            id: commentId(104 + index),
+            taskId: job.taskId,
+            authorId: userId(2),
+            body,
+            createdAt: "",
+          }));
+        },
+        async postComment(_taskId: ReturnType<typeof taskId>, body: string) {
+          postAttempts += 1;
+          deps.comments.push(body);
+          throw new Error("response lost after acceptance");
+        },
+      },
+    };
+
+    await expect(executePiComment(input)).rejects.toThrow(
+      "response lost after acceptance",
+    );
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+
+    expect(calls).toEqual(["steer:acknowledge once"]);
+    expect(postAttempts).toBe(1);
+    expect(deps.comments).toHaveLength(1);
+    expect([...deps.milestones.values()][0]).toMatchObject({
+      deliveryState: "delivered",
+      commentId: commentId(104),
+    });
+  });
+
+  it("does not steer when the durable job entered Waiting after monitor startup", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const staleRunningJob = job;
+    const waitingJob = { ...job, state: "waiting" as const };
+    const store = {
+      ...deps.store,
+      async getJob() {
+        return waitingJob;
+      },
+    } as unknown as JobStore;
+
+    await expect(
+      executePiComment({
+        job: staleRunningJob,
+        commentId: commentId(26),
+        action: { kind: "steer", message: "must not dispatch" },
+        handle: handle(calls),
+        store,
+        gateway: deps.gateway,
+      }),
+    ).resolves.toEqual({ status: "ignored" });
+
+    expect(calls).toEqual([]);
+    expect(deps.comments).toEqual([]);
+  });
+
+  it("aborts while waiting and propagates cancellation to completion", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    let cancellationRequests = 0;
+    const waitingJob = { ...job, state: "waiting" as const };
+
+    await executePiComment({
+      job: waitingJob,
+      commentId: commentId(21),
+      action: { kind: "abort", reason: "stop this attempt" },
+      handle: handle(calls),
+      store: deps.store,
+      gateway: deps.gateway,
+      onAbortRequested: () => {
+        cancellationRequests += 1;
+      },
+    });
+
+    expect(calls).toEqual(["abort:stop this attempt"]);
+    expect(cancellationRequests).toBe(1);
+    expect(deps.comments[0]).toContain("stop this attempt");
+  });
+
+  it("monitors new owner commands and ignores historical comments", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const seenWatermarks: number[] = [];
+    const comments = [
+      {
+        id: commentId(20),
+        taskId: job.taskId,
+        authorId: userId(1),
+        body: "/pi steer historical",
+        createdAt: "",
+      },
+      {
+        id: commentId(21),
+        taskId: job.taskId,
+        authorId: userId(1),
+        body: "/pi steer focus tests",
+        createdAt: "",
+      },
+    ];
+    const monitorStore = {
+      ...deps.store,
+      async getCommentWatermark() {
+        return null;
+      },
+      async recordCommentWatermark(_taskId: unknown, id: number) {
+        seenWatermarks.push(id);
+      },
+    } as unknown as JobStore;
+    const gateway = {
+      ...deps.gateway,
+      async listComments(_taskId: unknown, after: number | null) {
+        return comments.filter(
+          (comment) => after === null || comment.id > after,
+        );
+      },
+    } as unknown as VikunjaGateway;
+    const monitor = startPiCommentMonitor({
+      job,
+      handle: handle(calls),
+      ownerUserId: userId(1),
+      store: monitorStore,
+      gateway,
+      initialCommentId: commentId(20),
+      pollIntervalMs: 100,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    monitor.stop();
+    await monitor.done;
+
+    expect(calls).toEqual(["steer:focus tests"]);
+    expect(seenWatermarks).toContain(21);
+    expect(deps.comments).toHaveLength(1);
+  });
+
+  it("observes remote overrides before dispatching queued commands and persists the report atomically", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const queued = {
+      id: commentId(29),
+      taskId: job.taskId,
+      authorId: userId(1),
+      body: "/pi steer must not dispatch",
+      createdAt: "",
+    };
+    let current = job;
+    let terminalFailureCalls = 0;
+    const durableIntents = new Map<
+      string,
+      { state: "pending" | "succeeded"; remoteId: string | null }
+    >();
+    const monitorStore = {
+      ...deps.store,
+      async getJob() {
+        return current;
+      },
+      async transition() {
+        throw new Error("manual overrides must use an atomic terminal failure");
+      },
+      async recordTerminalFailure(
+        _jobId: Job["id"],
+        terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+        intents: readonly { idempotencyKey: string }[],
+      ) {
+        terminalFailureCalls += 1;
+        for (const intent of intents) {
+          durableIntents.set(intent.idempotencyKey, {
+            state: "pending",
+            remoteId: null,
+          });
+        }
+        current = { ...current, state: "failed", terminalErrorCode };
+        return current;
+      },
+      async recordMutationIntent(input: { idempotencyKey: string }) {
+        const intent = durableIntents.get(input.idempotencyKey);
+        if (intent === undefined) {
+          throw new Error("override report was not persisted atomically");
+        }
+        return { ...input, ...intent } as never;
+      },
+      async completeMutation(key: string, remoteId: string | null) {
+        durableIntents.set(key, { state: "succeeded", remoteId });
+        return {} as never;
+      },
+      async recordCommentWatermark() {},
+    } as unknown as JobStore;
+    const gateway = {
+      ...deps.gateway,
+      async listComments() {
+        return [queued];
+      },
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: layout.buckets.Review.id,
+          done: false,
+        };
+      },
+    } as unknown as VikunjaGateway;
+
+    const monitor = startPiCommentMonitor({
+      job,
+      handle: handle(calls),
+      ownerUserId: userId(1),
+      store: monitorStore,
+      gateway,
+      layout,
+      initialCommentId: null,
+      pollIntervalMs: 10,
+      logError: () => undefined,
+    });
+    await monitor.done;
+
+    expect(calls).toEqual(["abort:owner selected another task bucket"]);
+    expect(terminalFailureCalls).toBe(1);
+    expect(current.terminalErrorCode).toBe("MANUAL_STATE_OVERRIDE");
+    expect(durableIntents.get("job:job-1:manual-state-override")?.state).toBe(
+      "succeeded",
+    );
+  });
+
+  it("retries a command when acknowledgement delivery fails before advancing the watermark", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    let attempts = 0;
+    const comment = {
+      id: commentId(24),
+      taskId: job.taskId,
+      authorId: userId(1),
+      body: "/pi unknown",
+      createdAt: "",
+    };
+    const gateway = {
+      ...deps.gateway,
+      async listComments(_taskId: unknown, after: number | null) {
+        return after === null || comment.id > after ? [comment] : [];
+      },
+      async postComment(_taskId: unknown, body: string) {
+        attempts += 1;
+        if (attempts === 1) throw new Error("temporary comment failure");
+        deps.comments.push(body);
+        return commentId(102);
+      },
+    } as unknown as VikunjaGateway;
+    const monitorStore = {
+      ...deps.store,
+      async recordCommentWatermark() {
+        return undefined;
+      },
+    } as unknown as JobStore;
+    const monitor = startPiCommentMonitor({
+      job,
+      handle: handle(calls),
+      ownerUserId: userId(1),
+      store: monitorStore,
+      gateway,
+      initialCommentId: null,
+      pollIntervalMs: 10,
+      logError: () => undefined,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    monitor.stop();
+    await monitor.done;
+
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    expect(deps.comments).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "the task move to Waiting precedes the local job transition",
+      localState: "running" as const,
+      remoteBucketId: layout.buckets.Waiting.id,
+      intentSuffix: "waiting",
+      expectedBucketId: layout.buckets.Running.id,
+    },
+    {
+      name: "the accepted-answer move to Running precedes local resolution",
+      localState: "waiting" as const,
+      remoteBucketId: layout.buckets.Running.id,
+      intentSuffix: "running",
+      expectedBucketId: layout.buckets.Waiting.id,
+    },
+  ])("preserves a runner-owned question transition when $name", async (scenario) => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const currentJob = { ...job, state: scenario.localState };
+    const questionId = "question-1";
+    const monitorStore = {
+      ...deps.store,
+      async getJob() {
+        return currentJob;
+      },
+      async getActiveQuestion() {
+        return { id: questionId, jobId: job.id, state: "pending" } as never;
+      },
+      async getMutationIntent(key: string) {
+        expect(key).toBe(
+          `job:${job.id}:question:${questionId}:${scenario.intentSuffix}`,
+        );
+        return {
+          jobId: job.id,
+          taskId: job.taskId,
+          operation: "move_task",
+          idempotencyKey: key,
+          request: {
+            bucketId: scenario.remoteBucketId,
+            expectedBucketId: scenario.expectedBucketId,
+          },
+          state: "succeeded",
+        } as never;
+      },
+    } as unknown as JobStore;
+    const gateway = {
+      ...deps.gateway,
+      async listComments() {
+        return [];
+      },
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: scenario.remoteBucketId,
+          done: false,
+        };
+      },
+    } as unknown as VikunjaGateway;
+
+    const monitor = startPiCommentMonitor({
+      job,
+      handle: handle(calls),
+      ownerUserId: userId(1),
+      store: monitorStore,
+      gateway,
+      layout,
+      initialCommentId: null,
+      pollIntervalMs: 10,
+      logError: () => undefined,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    monitor.stop();
+    await monitor.done;
+
+    expect(calls).toEqual([]);
+    expect(deps.comments).toEqual([]);
+  });
+
+  it("aborts and reports a human bucket override without moving it back", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    let current = job;
+    const monitorStore = {
+      ...deps.store,
+      async getJob() {
+        return current;
+      },
+      async recordTerminalFailure(
+        _jobId: Job["id"],
+        terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      ) {
+        current = { ...current, state: "failed", terminalErrorCode };
+        return current;
+      },
+    } as unknown as JobStore;
+    const gateway = {
+      ...deps.gateway,
+      async listComments() {
+        return [];
+      },
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: 2 as Job["projectId"],
+          done: false,
+        };
+      },
+    } as unknown as VikunjaGateway;
+    const monitor = startPiCommentMonitor({
+      job,
+      handle: handle(calls),
+      ownerUserId: userId(1),
+      store: monitorStore,
+      gateway,
+      layout,
+      initialCommentId: null,
+      pollIntervalMs: 10,
+      logError: () => undefined,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    monitor.stop();
+    await monitor.done;
+
+    expect(calls).toEqual(["abort:owner selected another task bucket"]);
+    expect(current.terminalErrorCode).toBe("MANUAL_STATE_OVERRIDE");
+    expect(deps.comments[0]).toContain("MANUAL_STATE_OVERRIDE");
+  });
+
+  it("does not steer a non-running job and answers unknown owner commands with help", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+
+    const waitingJob = { ...job, state: "waiting" as const };
+    const waitingStore = {
+      ...deps.store,
+      async getJob() {
+        return waitingJob;
+      },
+    } as unknown as JobStore;
+    await expect(
+      executePiComment({
+        job: waitingJob,
+        commentId: commentId(22),
+        action: { kind: "steer", message: "not now" },
+        handle: handle(calls),
+        store: waitingStore,
+        gateway: deps.gateway,
+      }),
+    ).resolves.toEqual({ status: "ignored" });
+    await expect(
+      executePiComment({
+        job,
+        commentId: commentId(23),
+        action: { kind: "help", message: "Supported commands" },
+        handle: handle(calls),
+        store: deps.store,
+        gateway: deps.gateway,
+      }),
+    ).resolves.toEqual({ status: "handled" });
+    expect(calls).toEqual([]);
+    expect(deps.comments[0]).toContain("Supported commands");
+  });
+});
