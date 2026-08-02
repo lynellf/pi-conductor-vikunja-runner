@@ -4,6 +4,7 @@ import type {
   RunnerUiContext,
 } from "../conductor/gateway.js";
 import type { ProjectConfig } from "../config/config.js";
+import type { NewRemoteMutationIntent } from "../persistence/contracts.js";
 import type {
   PreparedWorktree,
   PublishResult,
@@ -13,7 +14,7 @@ import type {
 import type { VikunjaGateway } from "../vikunja/gateway.js";
 import { startPiCommentMonitor } from "./control.js";
 import { reportManualOverride } from "./idempotency.js";
-import type { Job, JobStore } from "./jobs.js";
+import type { Job, JobStore, TerminalErrorCode } from "./jobs.js";
 import { buildConductorGoal } from "./prompt.js";
 import {
   type BucketId,
@@ -37,6 +38,7 @@ export interface StartClaimedJobInput {
   readonly conductor: ConductorGateway;
   readonly ui: RunnerUiContext;
   readonly maxInputChars?: number;
+  readonly maxCommentChars?: number;
   readonly includeRunnerComments?: boolean;
   /** Abort the live conductor when the daemon is shutting down. */
   readonly signal?: AbortSignal;
@@ -302,6 +304,73 @@ const failCompletedJob = async (
   throw new JobCompletionError(`job completion failed: ${code}`, failed, cause);
 };
 
+type TerminalFailureActionsInput = {
+  readonly job: Job;
+  readonly layout: ProjectLayout;
+  readonly expectedBucketId: BucketId;
+  readonly terminalErrorCode: TerminalErrorCode;
+  readonly detail: string;
+  readonly maxCommentChars?: number;
+};
+
+const terminalFailureActions = (
+  input: TerminalFailureActionsInput,
+): readonly NewRemoteMutationIntent[] => {
+  const code = input.terminalErrorCode;
+  const keyBase = `job:${input.job.id}:terminal:${code.toLowerCase()}`;
+  return [
+    {
+      jobId: input.job.id,
+      taskId: input.job.taskId,
+      operation: "move_task",
+      idempotencyKey: `${keyBase}:move`,
+      request: {
+        bucketId: input.layout.buckets.Failed.id,
+        expectedBucketId: input.expectedBucketId,
+      },
+    },
+    {
+      jobId: input.job.id,
+      taskId: input.job.taskId,
+      operation: "post_comment",
+      idempotencyKey: `${keyBase}:comment`,
+      request: {
+        body: truncateComment(
+          `[pi-runner][idempotency:${keyBase}:comment] ${code}: ${input.detail} Move this task to Ready to retry; preserved artifacts were not deleted.`,
+          input.maxCommentChars ?? 12000,
+        ),
+      },
+    },
+  ];
+};
+
+const recordStartFailure = async (
+  input: Pick<StartClaimedJobInput, "layout" | "store" | "maxCommentChars">,
+  job: Job,
+  terminalErrorCode: Extract<
+    TerminalErrorCode,
+    "REPOSITORY_PREPARE_FAILED" | "CONDUCTOR_START_FAILED"
+  >,
+  detail: string,
+  cause?: unknown,
+): Promise<never> => {
+  const failed = await input.store.recordTerminalFailure(
+    job.id,
+    terminalErrorCode,
+    terminalFailureActions({
+      job,
+      layout: input.layout,
+      expectedBucketId: input.layout.buckets.Running.id,
+      terminalErrorCode,
+      detail,
+      ...(input.maxCommentChars === undefined
+        ? {}
+        : { maxCommentChars: input.maxCommentChars }),
+    }),
+  );
+  throw new JobStartError(detail, failed, cause);
+};
+
 export interface ReportTerminalJobFailureInput {
   readonly job: Job;
   readonly layout: ProjectLayout;
@@ -324,23 +393,27 @@ export const reportTerminalJobFailure = async (
   input: ReportTerminalJobFailureInput,
 ): Promise<void> => {
   const code = input.job.terminalErrorCode ?? "CONDUCTOR_START_FAILED";
-  const moveKey = `job:${input.job.id}:terminal:${code.toLowerCase()}:move`;
+  const [moveAction, commentAction] = terminalFailureActions({
+    job: input.job,
+    layout: input.layout,
+    expectedBucketId: input.expectedBucketId,
+    terminalErrorCode: code,
+    detail: input.detail,
+    ...(input.maxCommentChars === undefined
+      ? {}
+      : { maxCommentChars: input.maxCommentChars }),
+  });
+  if (moveAction === undefined || commentAction === undefined) {
+    throw new Error("terminal failure actions are incomplete");
+  }
+  const moveKey = moveAction.idempotencyKey;
   let current: CodingTask | null = null;
   try {
     current = await input.gateway.getTask(input.job.taskId);
   } catch {
     // Record a guarded move for startup replay. Reconciliation re-reads the
     // task and suppresses the move if the expected runner-owned bucket changed.
-    await input.store.recordMutationIntent({
-      jobId: input.job.id,
-      taskId: input.job.taskId,
-      operation: "move_task",
-      idempotencyKey: moveKey,
-      request: {
-        bucketId: input.layout.buckets.Failed.id,
-        expectedBucketId: input.expectedBucketId,
-      },
-    });
+    await input.store.recordMutationIntent(moveAction);
   }
 
   const runnerStillOwnsBucket =
@@ -349,22 +422,20 @@ export const reportTerminalJobFailure = async (
     !current.done &&
     current.bucketId === input.expectedBucketId;
   if (runnerStillOwnsBucket) {
-    await mutation(input, "move_task", moveKey, {
-      bucketId: input.layout.buckets.Failed.id,
-      expectedBucketId: input.expectedBucketId,
-    });
+    await mutation(
+      input,
+      "move_task",
+      moveKey,
+      moveAction.request as Record<string, unknown>,
+    );
   }
 
-  const preserved =
-    current !== null && !runnerStillOwnsBucket
-      ? ` The runner preserved observed project ${current.projectId}, bucket ${current.bucketId}, done=${current.done}.`
-      : "";
-  const commentKey = `job:${input.job.id}:terminal:${code.toLowerCase()}:comment`;
-  const body = truncateComment(
-    `[pi-runner][idempotency:${commentKey}] ${code}: ${input.detail}${preserved} Move this task to Ready to retry; preserved artifacts were not deleted.`,
-    input.maxCommentChars ?? 12000,
+  await mutation(
+    input,
+    "post_comment",
+    commentAction.idempotencyKey,
+    commentAction.request as Record<string, unknown>,
   );
-  await mutation(input, "post_comment", commentKey, { body });
 };
 
 /**
@@ -630,21 +701,21 @@ export const startClaimedJob = async (
       preparedWorktree.worktree,
     );
   } catch (error) {
-    const failed = await input.store.transition(input.job.id, {
-      state: "failed",
-      terminalErrorCode: "REPOSITORY_PREPARE_FAILED",
-    });
-    throw new JobStartError("repository preparation failed", failed, error);
+    return recordStartFailure(
+      input,
+      input.job,
+      "REPOSITORY_PREPARE_FAILED",
+      "repository preparation failed",
+      error,
+    );
   }
 
   if (preparedJob.branch === null) {
-    const failed = await input.store.transition(input.job.id, {
-      state: "failed",
-      terminalErrorCode: "REPOSITORY_PREPARE_FAILED",
-    });
-    throw new JobStartError(
+    return recordStartFailure(
+      input,
+      preparedJob,
+      "REPOSITORY_PREPARE_FAILED",
       "repository preparation returned no branch",
-      failed,
     );
   }
 
@@ -703,11 +774,13 @@ export const startClaimedJob = async (
         // conductor session that could not be aborted synchronously.
       }
     }
-    const failed = await input.store.transition(input.job.id, {
-      state: "failed",
-      terminalErrorCode: "CONDUCTOR_START_FAILED",
-    });
-    throw new JobStartError("conductor start failed", failed, error);
+    return recordStartFailure(
+      input,
+      preparedJob,
+      "CONDUCTOR_START_FAILED",
+      "conductor start failed",
+      error,
+    );
   }
 };
 

@@ -78,6 +78,7 @@ const ui = {} as ExtensionUIContext;
 const makeInput = (overrides: Record<string, unknown> = {}) => {
   const events: string[] = [];
   let persisted: Job = job;
+  const terminalIntents: Parameters<JobStore["recordMutationIntent"]>[0][] = [];
   const store = {
     async recordWorktree(id: Job["id"], branch: string, worktree: string) {
       events.push(`worktree:${id}:${branch}:${worktree}`);
@@ -108,6 +109,16 @@ const makeInput = (overrides: Record<string, unknown> = {}) => {
         terminalErrorCode:
           transition.state === "failed" ? transition.terminalErrorCode : null,
       };
+      return persisted;
+    },
+    async recordTerminalFailure(
+      _id: Job["id"],
+      terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      intents: readonly Parameters<JobStore["recordMutationIntent"]>[0][],
+    ) {
+      terminalIntents.push(...intents);
+      events.push(`terminal:${terminalErrorCode}`);
+      persisted = { ...persisted, state: "failed", terminalErrorCode };
       return persisted;
     },
   } as unknown as JobStore;
@@ -152,6 +163,7 @@ const makeInput = (overrides: Record<string, unknown> = {}) => {
     },
     events,
     store,
+    terminalIntents,
   };
 };
 
@@ -303,7 +315,7 @@ describe("startClaimedJob", () => {
     ]);
   });
 
-  it("fails the job with a stable preparation code when repository setup fails", async () => {
+  it("atomically persists repository failure actions before terminating the job", async () => {
     const dependencies = makeInput();
     dependencies.input.repository = {
       async prepare() {
@@ -318,7 +330,18 @@ describe("startClaimedJob", () => {
         terminalErrorCode: "REPOSITORY_PREPARE_FAILED",
       }),
     });
-    expect(dependencies.events).toEqual(["transition:failed"]);
+    expect(dependencies.events).toEqual(["terminal:REPOSITORY_PREPARE_FAILED"]);
+    expect(dependencies.terminalIntents).toEqual([
+      expect.objectContaining({
+        operation: "move_task",
+        idempotencyKey: "job:job-1:terminal:repository_prepare_failed:move",
+        request: { bucketId: 6, expectedBucketId: 3 },
+      }),
+      expect.objectContaining({
+        operation: "post_comment",
+        idempotencyKey: "job:job-1:terminal:repository_prepare_failed:comment",
+      }),
+    ]);
   });
 
   it("fails the job when the conductor cannot start", async () => {
@@ -340,7 +363,7 @@ describe("startClaimedJob", () => {
       "prepare",
       "worktree:job-1:pi/vikunja-12-fix-api-auth:/data/jobs/12/worktree",
       "comments",
-      "transition:failed",
+      "terminal:CONDUCTOR_START_FAILED",
     ]);
   });
 
@@ -365,7 +388,7 @@ describe("startClaimedJob", () => {
       "worktree:job-1:pi/vikunja-12-fix-api-auth:/data/jobs/12/worktree",
       "comments",
       "start:pi/vikunja-12-fix-api-auth:true:true",
-      "transition:failed",
+      "terminal:CONDUCTOR_START_FAILED",
     ]);
   });
 });
