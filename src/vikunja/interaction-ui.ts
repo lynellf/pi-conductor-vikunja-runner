@@ -343,6 +343,16 @@ export const createVikunjaQuestionUi = (
           question.id,
           "task moved while entering or leaving Waiting",
         );
+        try {
+          await reportManualOverride({
+            job: options.job,
+            store: options.store,
+            gateway: options.gateway,
+            maxCommentChars,
+          });
+        } catch {
+          // The terminal override is durable; reconciliation can retry its report.
+        }
       }
       if (error instanceof Error && error.name === "AbortError") {
         const reason = signal?.reason;

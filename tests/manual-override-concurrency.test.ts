@@ -251,7 +251,7 @@ describe("concurrent manual bucket override reporting", () => {
       "idempotency:job:job-concurrent:manual-state-override",
     );
     expect(result.comments.at(-1)?.length).toBeLessThanOrEqual(240);
-    expect(result.moves).toEqual([layout.buckets.Waiting.id]);
+    expect(result.moves).toEqual([]);
     expect(result.currentJob.terminalErrorCode).toBe("MANUAL_STATE_OVERRIDE");
     expect(
       result.mutations.get("job:job-concurrent:manual-state-override")?.state,
