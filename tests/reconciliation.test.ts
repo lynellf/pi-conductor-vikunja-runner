@@ -723,6 +723,67 @@ describe("reconcileStartup", () => {
     expect(await store.recoverableJobs()).toHaveLength(0);
   });
 
+  it("persists interrupted-claim compensation before exposing terminal state", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    const originalRecordTerminalFailure =
+      store.recordTerminalFailure.bind(store);
+    store.recordTerminalFailure = async (id, code, intents) => {
+      expect(intents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            idempotencyKey: `job:${claimed.id}:startup-claim-interrupted:move-failed`,
+            operation: "move_task",
+            request: { bucketId: 6, expectedBucketId: 3 },
+          }),
+          expect.objectContaining({
+            idempotencyKey: `job:${claimed.id}:startup-claim-interrupted:comment`,
+            operation: "post_comment",
+          }),
+        ]),
+      );
+      const failed = await originalRecordTerminalFailure(id, code, intents);
+      throw new Error(`simulated exit after ${failed.state} commit`);
+    };
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(3),
+      listComments: async () => [],
+      moveTask: async () => {
+        throw new Error("delivery must occur after the atomic commit");
+      },
+      postComment: async () => {
+        throw new Error("delivery must occur after the atomic commit");
+      },
+    };
+
+    await expect(
+      reconcileStartup({
+        store,
+        gateway,
+        layouts: new Map([[projectId(42), layout()]]),
+      }),
+    ).rejects.toThrow("simulated exit after failed commit");
+
+    expect(await store.getJob(claimed.id)).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "CLAIM_CONFLICT",
+    });
+    expect(
+      await store.getMutationIntent(
+        `job:${claimed.id}:startup-claim-interrupted:move-failed`,
+      ),
+    ).toMatchObject({ state: "pending" });
+    expect(
+      await store.getMutationIntent(
+        `job:${claimed.id}:startup-claim-interrupted:comment`,
+      ),
+    ).toMatchObject({ state: "pending" });
+  });
+
   it("preserves Ready when claiming was interrupted before the remote move", async () => {
     const store = await openStore();
     const claimed = await store.tryClaim(task(2));

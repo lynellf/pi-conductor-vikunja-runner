@@ -295,60 +295,70 @@ export async function reconcileStartup(
       // A process can exit after the short local claim transaction but before
       // the claim reaches a conductor run. It is not safe to resume that
       // partial claim: doing so could duplicate assignment/start milestones.
-      // Release the local active slot and preserve any owner-selected bucket.
-      await input.store.transition(job.id, {
-        state: "failed",
-        terminalErrorCode: "CLAIM_CONFLICT",
-      });
-      jobsFailed += 1;
       const stillRunnerOwned =
         !remoteTask.done && remoteTask.bucketId === layout.buckets.Running.id;
+      const moveKey = `job:${job.id}:startup-claim-interrupted:move-failed`;
+      const moveRequest = {
+        bucketId: layout.buckets.Failed.id,
+        expectedBucketId: layout.buckets.Running.id,
+      };
+      const commentKey = `job:${job.id}:startup-claim-interrupted:comment`;
+      const commentRequest = {
+        body: runnerComment(
+          commentKey,
+          stillRunnerOwned
+            ? "CLAIM_CONFLICT: the daemon restarted during task claiming; the task was moved to Failed without starting a conductor run. Move it to Ready to retry."
+            : "CLAIM_CONFLICT: the daemon restarted during task claiming; the runner preserved the task's current bucket. Move it to Ready to retry.",
+        ),
+      };
+      const intents: Parameters<JobStore["recordMutationIntent"]>[0][] = [];
+      if (stillRunnerOwned) {
+        intents.push({
+          jobId: job.id,
+          taskId: remoteTask.id,
+          operation: "move_task",
+          idempotencyKey: moveKey,
+          request: moveRequest,
+        });
+      }
+      intents.push({
+        jobId: job.id,
+        taskId: remoteTask.id,
+        operation: "post_comment",
+        idempotencyKey: commentKey,
+        request: commentRequest,
+      });
+      // Persist compensation before releasing the active slot. Delivery may
+      // be interrupted, but startup will always have replayable actions.
+      await input.store.recordTerminalFailure(
+        job.id,
+        "CLAIM_CONFLICT",
+        intents,
+      );
+      jobsFailed += 1;
       if (stillRunnerOwned) {
         await deliverMutation(
           input,
           job.id,
           remoteTask.id,
           "move_task",
-          `job:${job.id}:startup-claim-interrupted:move-failed`,
-          {
-            bucketId: layout.buckets.Failed.id,
-            expectedBucketId: layout.buckets.Running.id,
-          },
+          moveKey,
+          moveRequest,
         );
-        await deliverMutation(
-          input,
-          job.id,
-          remoteTask.id,
-          "post_comment",
-          `job:${job.id}:startup-claim-interrupted:comment`,
-          {
-            body: runnerComment(
-              `job:${job.id}:startup-claim-interrupted:comment`,
-              "CLAIM_CONFLICT: the daemon restarted during task claiming; the task was moved to Failed without starting a conductor run. Move it to Ready to retry.",
-            ),
-          },
-        );
-      } else {
-        if (
-          remoteTask.bucketId !== layout.buckets.Ready.id ||
-          remoteTask.done
-        ) {
-          manualOverrides += 1;
-        }
-        await deliverMutation(
-          input,
-          job.id,
-          remoteTask.id,
-          "post_comment",
-          `job:${job.id}:startup-claim-interrupted:comment`,
-          {
-            body: runnerComment(
-              `job:${job.id}:startup-claim-interrupted:comment`,
-              "CLAIM_CONFLICT: the daemon restarted during task claiming; the runner preserved the task's current bucket. Move it to Ready to retry.",
-            ),
-          },
-        );
+      } else if (
+        remoteTask.bucketId !== layout.buckets.Ready.id ||
+        remoteTask.done
+      ) {
+        manualOverrides += 1;
       }
+      await deliverMutation(
+        input,
+        job.id,
+        remoteTask.id,
+        "post_comment",
+        commentKey,
+        commentRequest,
+      );
       continue;
     }
 
