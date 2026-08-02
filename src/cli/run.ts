@@ -20,7 +20,7 @@ import {
   type StartupReconciliationReport,
 } from "../domain/reconciliation.js";
 import type { RunnerCycleInput } from "../domain/runner.js";
-import { runPollCycle } from "../domain/runner.js";
+import { runPollCycle, startHeartbeatRefresh } from "../domain/runner.js";
 import type { ProjectId, ProjectLayout } from "../domain/types.js";
 import { createVikunjaQuestionUi } from "../vikunja/interaction-ui.js";
 import { runnerLogger } from "./logging.js";
@@ -157,6 +157,7 @@ export const defaultResumeJobs = async (
         recovered.handle,
         input.signal,
       );
+      const stopHeartbeatRefresh = startHeartbeatRefresh(input.runtime.store);
       try {
         await completeConductorJob({
           job: recovered.job,
@@ -170,6 +171,7 @@ export const defaultResumeJobs = async (
         });
         resumed += 1;
       } finally {
+        stopHeartbeatRefresh();
         detachShutdownAbort();
         monitor.stop();
         await monitor.done;

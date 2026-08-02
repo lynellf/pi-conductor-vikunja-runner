@@ -68,7 +68,7 @@ describe("SqliteJobStore", () => {
 
   it("carries a persisted branch and worktree into a retry attempt", async () => {
     const store = await openStore();
-    const first = await store.tryClaim(task(10));
+    const first = await store.tryClaim(task(10), "repo-a");
     if (first === null) throw new Error("claim unexpectedly failed");
     await store.recordWorktree(
       first.id,
@@ -80,13 +80,58 @@ describe("SqliteJobStore", () => {
       terminalErrorCode: "VERIFY_FAILED",
     });
 
-    const retry = await store.tryClaim({ ...task(10), title: "Owner renamed" });
+    const retry = await store.tryClaim(
+      { ...task(10), title: "Owner renamed" },
+      "repo-a",
+    );
 
     expect(retry).toMatchObject({
       attempt: 2,
       branch: "pi/vikunja-10-original-title",
       worktree: "/var/lib/runner/jobs/10/worktree",
     });
+  });
+
+  it("does not carry worktree artifacts when a task changes projects", async () => {
+    const store = await openStore();
+    const first = await store.tryClaim(task(10, 42), "repo-a");
+    if (first === null) throw new Error("claim unexpectedly failed");
+    await store.recordWorktree(
+      first.id,
+      "pi/vikunja-10-original-title",
+      "/var/lib/runner/jobs/10/worktree",
+    );
+    await store.transition(first.id, {
+      state: "failed",
+      terminalErrorCode: "VERIFY_FAILED",
+    });
+
+    const retry = await store.tryClaim(task(10, 43), "repo-b");
+
+    expect(retry).toMatchObject({
+      attempt: 2,
+      branch: null,
+      worktree: null,
+    });
+  });
+
+  it("does not carry artifacts when the configured repository changes", async () => {
+    const store = await openStore();
+    const first = await store.tryClaim(task(10, 42), "repo-a");
+    if (first === null) throw new Error("claim unexpectedly failed");
+    await store.recordWorktree(
+      first.id,
+      "pi/vikunja-10-original-title",
+      "/var/lib/runner/jobs/10/worktree",
+    );
+    await store.transition(first.id, {
+      state: "failed",
+      terminalErrorCode: "VERIFY_FAILED",
+    });
+
+    const retry = await store.tryClaim(task(10, 42), "repo-b");
+
+    expect(retry).toMatchObject({ branch: null, worktree: null });
   });
 
   it("upgrades a v1 database without losing recoverable jobs", async () => {

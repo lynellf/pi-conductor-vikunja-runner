@@ -6,6 +6,8 @@ import { bucketId, commentId } from "./types.js";
 
 export interface ClaimTaskInput {
   readonly task: CodingTask;
+  /** Configured repository identity used to isolate retry artifacts. */
+  readonly repository?: string;
   readonly layout: ProjectLayout;
   readonly store: JobStore;
   readonly gateway: Pick<
@@ -117,28 +119,50 @@ const failClaim = async (
   input: ClaimTaskInput,
   job: Job,
   error: unknown,
+  moveAttempted: boolean,
   remoteRunning: boolean,
 ): Promise<ClaimResult> => {
-  let shouldCompensate = remoteRunning;
+  let shouldCompensate = false;
+  let remoteStateUnknown = false;
   let overrideMessage: string | null = null;
-  // A failure can happen after the Ready -> Running move has reached Vikunja
-  // but before assignment or the start milestone completes. Re-read before
-  // compensating: the owner may have selected another bucket while the claim
-  // was failing. A known human override must never be overwritten.
-  if (shouldCompensate) {
+  // A move response can be lost after Vikunja has applied the Ready -> Running
+  // mutation, so remoteRunning is only a lower bound. Re-read before finalizing
+  // every failed claim; the owner may also have selected another bucket while
+  // the claim was failing. A known human override must never be overwritten.
+  try {
+    const current = await input.gateway.getTask(job.taskId);
+    shouldCompensate =
+      current.projectId === job.projectId &&
+      !current.done &&
+      current.bucketId === input.layout.buckets.Running.id;
+    if (
+      !shouldCompensate &&
+      (remoteRunning ||
+        current.projectId !== job.projectId ||
+        current.done ||
+        current.bucketId !== input.layout.buckets.Ready.id)
+    ) {
+      overrideMessage = `task state changed during claim (observed project ${current.projectId}, bucket ${current.bucketId}, done=${current.done}); the runner preserved the selected state.`;
+    }
+  } catch {
+    // An unreadable remote state is ambiguous. The original Ready -> Running
+    // intent must still be superseded before the failed job is finalized; a
+    // separate expected-Running recovery intent below can safely retry after a
+    // later startup observation.
+    remoteStateUnknown = true;
+  }
+
+  if (moveAttempted) {
+    // Never leave the original Ready -> Running intent pending after this job
+    // becomes terminally failed: startup replay could resurrect the claim.
     try {
-      const current = await input.gateway.getTask(job.taskId);
-      shouldCompensate =
-        current.projectId === job.projectId &&
-        !current.done &&
-        current.bucketId === input.layout.buckets.Running.id;
-      if (!shouldCompensate) {
-        overrideMessage = `task state changed during claim (observed project ${current.projectId}, bucket ${current.bucketId}, done=${current.done}); the runner preserved the selected state.`;
-      }
+      await input.store.failMutation(
+        `job:${job.id}:claim:move`,
+        "claim finalized before remote move could be replayed",
+      );
     } catch {
-      // An unreadable remote state is ambiguous; leave the intent absent
-      // rather than risking a destructive bucket overwrite.
-      shouldCompensate = false;
+      // A completed intent is already safe; a missing intent can only occur if
+      // durable intent creation failed before the remote call was attempted.
     }
   }
 
@@ -148,23 +172,39 @@ const failClaim = async (
     state: "failed",
     terminalErrorCode: failureCode,
   });
-  try {
-    if (shouldCompensate) {
-      await deliverMutation(
-        input.store,
-        input.gateway,
-        job,
-        job.taskId,
-        "move_task",
-        `job:${job.id}:claim:move-failed`,
-        moveRequest(
+  if (moveAttempted && (shouldCompensate || remoteStateUnknown)) {
+    const recoveryKey = `job:${job.id}:claim:move-failed`;
+    try {
+      const recovery = await input.store.recordMutationIntent({
+        jobId: job.id,
+        taskId: job.taskId,
+        operation: "move_task",
+        idempotencyKey: recoveryKey,
+        request: moveRequest(
           input.layout.buckets.Failed.id,
           input.layout.buckets.Running.id,
         ),
-      );
+      });
+      // If the state was not observed, do not issue an unguarded mutation now;
+      // startup replay re-reads the task and only moves confirmed Running work.
+      if (shouldCompensate && recovery.state === "pending") {
+        await deliverMutation(
+          input.store,
+          input.gateway,
+          job,
+          job.taskId,
+          "move_task",
+          recoveryKey,
+          moveRequest(
+            input.layout.buckets.Failed.id,
+            input.layout.buckets.Running.id,
+          ),
+        );
+      }
+    } catch {
+      // Keep a pending recovery intent for startup reconciliation when remote
+      // compensation cannot be completed in this process.
     }
-  } catch {
-    // Keep the move intent pending so startup reconciliation can retry it.
   }
   try {
     const idempotencyKey = `job:${job.id}:claim:failure`;
@@ -229,14 +269,14 @@ export const claimReadyTask = async (
     return { status: "skipped" };
   }
 
-  const job = await input.store.tryClaim(input.task);
+  const job = await input.store.tryClaim(input.task, input.repository);
   if (job === null) return { status: "skipped" };
 
   let current: CodingTask;
   try {
     current = await input.gateway.getTask(input.task.id);
   } catch (error) {
-    return failClaim(input, job, error, false);
+    return failClaim(input, job, error, false, false);
   }
   if (
     current.projectId !== input.task.projectId ||
@@ -251,8 +291,10 @@ export const claimReadyTask = async (
     return { status: "conflict", job: conflicted };
   }
 
+  let moveAttempted = false;
   let remoteRunning = false;
   try {
+    moveAttempted = true;
     await deliverMutation(
       input.store,
       input.gateway,
@@ -279,6 +321,6 @@ export const claimReadyTask = async (
     const running = await input.store.transition(job.id, { state: "running" });
     return { status: "claimed", job: running };
   } catch (error) {
-    return failClaim(input, job, error, remoteRunning);
+    return failClaim(input, job, error, moveAttempted, remoteRunning);
   }
 };

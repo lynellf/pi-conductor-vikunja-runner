@@ -60,7 +60,8 @@ export interface RunnerCycleReport {
 
 const HEARTBEAT_REFRESH_INTERVAL_MS = 30_000;
 
-const startHeartbeatRefresh = (store: JobStore): (() => void) => {
+/** Keep the durable liveness marker fresh while a conductor run is active. */
+export const startHeartbeatRefresh = (store: JobStore): (() => void) => {
   const timer = setInterval(() => {
     void store.recordHeartbeat().catch(() => {
       // The next poll will retry the liveness write; never interrupt a live job.

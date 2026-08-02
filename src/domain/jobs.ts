@@ -56,7 +56,7 @@ export interface DaemonHeartbeatStore {
 }
 
 export interface JobStore extends DaemonHeartbeatStore {
-  tryClaim(task: CodingTask): Promise<Job | null>;
+  tryClaim(task: CodingTask, repository?: string): Promise<Job | null>;
   getJob(jobId: JobId): Promise<Job | null>;
   recordRunId(jobId: JobId, runId: string): Promise<void>;
   recordWorktree(jobId: JobId, branch: string, worktree: string): Promise<Job>;

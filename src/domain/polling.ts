@@ -49,11 +49,18 @@ export const pollOnce = async (
     availableSlots,
   });
   const task = eligible[0];
+  const projectForTask =
+    task === undefined
+      ? undefined
+      : projects.find((project) => project.id === task.projectId);
   const claim =
     task === undefined
       ? null
       : await claimReadyTask({
           task,
+          ...(projectForTask === undefined
+            ? {}
+            : { repository: projectForTask.repository }),
           layout: layouts.get(task.projectId) as ProjectLayout,
           store: input.store,
           gateway: input.gateway,

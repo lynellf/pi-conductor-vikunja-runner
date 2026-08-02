@@ -538,6 +538,131 @@ describe("runner daemon", () => {
     expect(errors).toHaveLength(1);
   });
 
+  it("refreshes the heartbeat while a recovered conductor run is active", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const project = config().projects["42"];
+      if (project === undefined) throw new Error("test project missing");
+      const recoveredJob: Job = {
+        id: "job-resumed-heartbeat" as Job["id"],
+        taskId: taskId(12),
+        projectId: projectId(42),
+        attempt: 1,
+        state: "running",
+        branch: "pi/vikunja-12-resumed",
+        worktree: "/var/lib/runner/jobs/12/worktree",
+        conductorRunId: "run-resumed",
+        createdAt: "2026-08-02T00:00:00.000Z",
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        terminalErrorCode: null,
+      };
+      const resumedLayout: ProjectLayout = {
+        viewId: project.kanbanViewId,
+        buckets: {
+          Backlog: { id: bucketId(1), title: "Backlog", position: 0 },
+          Ready: { id: bucketId(2), title: "Ready", position: 1 },
+          Running: { id: bucketId(3), title: "Running", position: 2 },
+          Waiting: { id: bucketId(4), title: "Waiting", position: 3 },
+          Review: { id: bucketId(5), title: "Review", position: 4 },
+          Failed: { id: bucketId(6), title: "Failed", position: 5 },
+          Done: { id: bucketId(7), title: "Done", position: 6 },
+        },
+        defaultBucketId: bucketId(1),
+        doneBucketId: bucketId(7),
+      };
+      let finishCompletion: (() => void) | undefined;
+      const completion = new Promise<{ exitReason: "aborted" }>((resolve) => {
+        finishCompletion = () => resolve({ exitReason: "aborted" });
+      });
+      const recordHeartbeat = vi.fn(async () => undefined);
+      const store = {
+        async recoverableJobs() {
+          return [recoveredJob];
+        },
+        async getJob() {
+          return recoveredJob;
+        },
+        async transition() {
+          return { ...recoveredJob, state: "failed" as const };
+        },
+        recordHeartbeat,
+        async recordMutationIntent(input: { idempotencyKey: string }) {
+          return { ...input, state: "pending" as const, remoteId: null };
+        },
+        async completeMutation(key: string, remoteId: string | null) {
+          return { idempotencyKey: key, state: "succeeded" as const, remoteId };
+        },
+        async getCommentWatermark() {
+          return null;
+        },
+        async recordCommentWatermark() {},
+      } as unknown as JobStore;
+      const gateway = {
+        async getTask() {
+          return {
+            id: recoveredJob.taskId,
+            projectId: recoveredJob.projectId,
+            title: "Resumed task",
+            description: "",
+            priority: 1,
+            position: 1,
+            bucketId: bucketId(3),
+            done: false,
+          };
+        },
+        async listComments() {
+          return [];
+        },
+        async moveTask() {},
+        async postComment() {
+          return 1 as never;
+        },
+      } as OnceRuntime["gateway"];
+      const runtime: OnceRuntime = {
+        store,
+        gateway,
+        repository: {
+          async prepare() {
+            return {
+              repository: "/var/lib/runner/repositories/42/repo",
+              branch: recoveredJob.branch ?? "",
+              worktree: recoveredJob.worktree ?? "",
+            };
+          },
+        } as OnceRuntime["repository"],
+        conductor: {
+          async resume() {
+            return {
+              runId: "run-resumed",
+              completion: () => completion,
+              async abort() {
+                finishCompletion?.();
+              },
+            } as never;
+          },
+        } as OnceRuntime["conductor"],
+        close: () => undefined,
+      };
+      const running = defaultResumeJobs({
+        config: config(),
+        runtime,
+        layouts: new Map([[project.id, resumedLayout]]),
+        logError: () => undefined,
+        signal: controller.signal,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(recordHeartbeat).toHaveBeenCalledTimes(1);
+      controller.abort("shutdown");
+      await expect(running).resolves.toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("aborts a recovered conductor run on daemon shutdown", async () => {
     const controller = new AbortController();
     const project = config().projects["42"];

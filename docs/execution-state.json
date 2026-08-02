@@ -7,80 +7,29 @@
     "path": "docs/pi-conductor-vikunja-runner-spec.md",
     "revision": null
   },
-  "status": "active",
-  "candidate_complete": false,
-  "active_slice": {
-    "id": "S-047",
-    "objective": "Resolve all six outstanding PR #1 review findings covering Vikunja move semantics, stale mutation replay, startup resume safety, retry artifact preservation, repository identity, and active heartbeat liveness.",
-    "source_refs": [
-      "PR #1 inline review comment 3699116642 (src/vikunja/http.ts)",
-      "PR #1 inline review comment 3699116644 (src/domain/reconciliation.ts)",
-      "PR #1 inline review comment 3699116648 (src/domain/reconciliation.ts)",
-      "PR #1 inline review comment 3699116654 (src/persistence/sqlite.ts)",
-      "PR #1 inline review comment 3699116662 (src/repositories/git.ts)",
-      "PR #1 inline review comment 3699116669 (src/domain/runner.ts)",
-      "docs/pi-conductor-vikunja-runner-spec.md §§8, 13, 14, 16, 19, 21, 23"
-    ],
-    "acceptance_checks": [
-      {
-        "id": "S-047-A1",
-        "statement": "Vikunja bucket moves use PUT and the HTTP regression asserts the emitted method.",
-        "evidence": "tests/vikunja-http.test.ts passes; move request is asserted as PUT."
-      },
-      {
-        "id": "S-047-A2",
-        "statement": "Every newly created move intent carries an expected source bucket, and startup replay refuses legacy unguarded move intents instead of mutating remote state.",
-        "evidence": "claiming, question, startup compensation, completion-failure, and Review-transition paths persist expectedBucketId; tests/reconciliation.test.ts passes guarded override and malformed-intent coverage."
-      },
-      {
-        "id": "S-047-A3",
-        "statement": "A startup remote-task read failure records the job as deferred and default resume excludes that job from the same startup pass.",
-        "evidence": "tests/reconciliation.test.ts asserts deferredJobIds and recoverable state; runDaemon forwards the deferred IDs to defaultResumeJobs."
-      },
-      {
-        "id": "S-047-A4",
-        "statement": "Retry claims inherit the latest attempt branch and worktree, independent of a renamed task title.",
-        "evidence": "tests/persistence-sqlite.test.ts passes the persisted branch/worktree retry regression."
-      },
-      {
-        "id": "S-047-A5",
-        "statement": "An existing project clone is rejected when origin does not exactly match the configured repository.",
-        "evidence": "tests/repositories-git.test.ts passes the changed-origin regression."
-      },
-      {
-        "id": "S-047-A6",
-        "statement": "Heartbeat writes continue on an independent timer until the active poll/execution cycle settles, and the timer is cleaned up.",
-        "evidence": "tests/runner-cycle.test.ts passes the active-execution heartbeat refresh regression and timer cleanup assertion."
-      }
-    ],
-    "implementation_status": "ready-for-review",
-    "review_status": "not-reviewed",
-    "files_changed": [
-      "src/vikunja/http.ts",
-      "tests/vikunja-http.test.ts",
-      "src/domain/reconciliation.ts",
-      "tests/reconciliation.test.ts",
-      "src/domain/claiming.ts",
-      "src/vikunja/interaction-ui.ts",
-      "src/persistence/sqlite.ts",
-      "tests/persistence-sqlite.test.ts",
-      "src/repositories/git.ts",
-      "tests/repositories-git.test.ts",
-      "src/domain/orchestration.ts",
-      "src/domain/runner.ts",
-      "tests/runner-cycle.test.ts",
-      "src/cli/run.ts"
-    ],
-    "tests_run": [
-      "pnpm vitest run tests/vikunja-http.test.ts tests/reconciliation.test.ts tests/persistence-sqlite.test.ts tests/repositories-git.test.ts tests/runner-cycle.test.ts tests/run.test.ts",
-      "pnpm test (31 files, 167 tests passed)",
-      "pnpm typecheck",
-      "pnpm lint",
-      "git diff --check"
-    ],
-    "findings": []
-  },
+  "status": "complete",
+  "candidate_complete": true,
+  "active_slice": null,
   "approved_slices": [
+    {
+      "id": "S-048",
+      "objective": "Resolve PR #1 findings: reconcile ambiguous Ready-to-Running claim moves, suppress stale durable moves for failed jobs, avoid retry worktree reuse across project changes, and refresh heartbeat while resumed jobs execute.",
+      "source_refs": [
+        "PR #1 inline review comment 3699116644 (src/domain/reconciliation.ts)",
+        "PR #1 inline review comment 3699182387 (src/domain/claiming.ts)",
+        "PR #1 inline review comment 3699182389 (src/persistence/sqlite.ts)",
+        "PR #1 inline review comment 3699182392 (src/cli/run.ts)",
+        "docs/pi-conductor-vikunja-runner-spec.md §§8, 13, 14, 19, 21, 23"
+      ],
+      "approval_evidence": [
+        "S-048-A1 PASS: claimReadyTask re-reads remote state after every attempted claim move, terminally supersedes the original Ready-to-Running intent before failing the job, and only creates a guarded expected-Running recovery intent for confirmed or unreadable state. Startup reconciliation suppresses pending non-Failed moves for failed jobs before replay; tests cover observed Running compensation, observed Ready preservation, unreadable re-read recovery, and stale claim/Review suppression.",
+        "S-048-A2 PASS: SqliteJobStore persists the configured repository identity and carries retry branch/worktree artifacts only when both project and repository identities match; cross-project and changed-repository regressions pass.",
+        "S-048-A3 PASS: defaultResumeJobs uses the same independently refreshed durable heartbeat timer as runPollCycle and always cleans it up; fake-timer coverage passes.",
+        "Independent verification: focused tests (55 passed), pnpm test (31 files, 176 tests passed), pnpm test:coverage (enforced domain thresholds passed), pnpm typecheck, pnpm lint, pnpm build, pnpm audit --prod, git diff --check, and execution-state validation passed. No rendered UI changed; UI review was not required.",
+        "Whole-request review: integrated implementation and tests preserve the approved prior slices and protected pre-existing work; no blocking implementation, security, compatibility, or performance findings remain."
+      ],
+      "approved_at": "2026-08-02T14:19:00Z"
+    },
     {
       "id": "S-046",
       "objective": "Reject an existing conductor manifest symlink that resolves outside the prepared task worktree before invoking pi-conductor.",
@@ -574,6 +523,31 @@
         "No rendered UI changed; UI review was not required. Protected pre-existing work and approved slices were preserved."
       ],
       "approved_at": "2026-08-02T00:16:30Z"
+    },
+    {
+      "id": "S-047",
+      "objective": "Resolve all six outstanding PR #1 review findings covering Vikunja move semantics, stale mutation replay, startup resume safety, retry artifact preservation, repository identity, and active heartbeat liveness.",
+      "source_refs": [
+        "PR #1 inline review comment 3699116642 (src/vikunja/http.ts)",
+        "PR #1 inline review comment 3699116644 (src/domain/reconciliation.ts)",
+        "PR #1 inline review comment 3699116648 (src/domain/reconciliation.ts)",
+        "PR #1 inline review comment 3699116654 (src/persistence/sqlite.ts)",
+        "PR #1 inline review comment 3699116662 (src/repositories/git.ts)",
+        "PR #1 inline review comment 3699116669 (src/domain/runner.ts)",
+        "docs/pi-conductor-vikunja-runner-spec.md §§8, 13, 14, 16, 19, 21, 23"
+      ],
+      "approval_evidence": [
+        "S-047-A1 PASS: src/vikunja/http.ts now emits PUT for bucket moves, and tests/vikunja-http.test.ts asserts the emitted method.",
+        "S-047-A2 PASS: all production move-intent creation paths persist expectedBucketId; reconciliation validates the expected source bucket and permanently rejects legacy unguarded move intents without mutating Vikunja. Focused reconciliation and full-suite tests pass.",
+        "S-047-A3 PASS: reconcileStartup returns deferredJobIds when getTask fails, and runDaemon forwards them so defaultResumeJobs excludes those jobs from the same startup pass while preserving them for a later retry.",
+        "S-047-A4 PASS: SqliteJobStore.tryClaim copies the latest attempt branch/worktree into retries; the renamed-task regression passes.",
+        "S-047-A5 PASS: GitRepositoryManager compares an existing clone origin exactly with project.repository before fetch; the changed-origin regression passes.",
+        "S-047-A6 PASS: runPollCycle refreshes the durable heartbeat on an independent 30-second timer through active execution and always clears the timer; fake-timer regression passes.",
+        "Independent review: inspected the integrated diff from 3f512112b24f6e7e8a8b37e256b55123ee169502 to 9031656495cc57a32bb8ac83595ca9f10c720c63, protected paths and pre-existing changes were preserved, and origin/feature/v1-runner matches HEAD.",
+        "Independent verification: python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json, pnpm test (31 files, 167 tests), pnpm test --coverage, pnpm typecheck, pnpm build, pnpm lint, pnpm audit --prod, and git diff --check passed. No rendered UI changed; UI review was not required.",
+        "PR resolution evidence: commit 9031656495cc57a32bb8ac83595ca9f10c720c63 is pushed to origin/feature/v1-runner; six owner replies reference that commit on all six actionable review threads (3699116642, 3699116644, 3699116648, 3699116654, 3699116662, 3699116669)."
+      ],
+      "approved_at": "2026-08-02T13:30:00Z"
     }
   ],
   "known_remaining": [
@@ -594,6 +568,10 @@
     "branch": "feature/v1-runner",
     "baseline_commit": "581f5c291da73dea260711c384d573fb0f829f66d",
     "preexisting_changes": [
+      {
+        "path": "docs/execution-state.json",
+        "note": "Pre-existing execution ledger changes from the prior PR-resolution visit; preserved and advanced with S-048 evidence."
+      },
       {
         "path": ".pi-conductor/",
         "note": "Host-generated run/session artifacts; preserve."
@@ -718,10 +696,15 @@
       "S-047: inherited preserved branch/worktree values into retry attempts.",
       "S-047: verified existing clone origin matches configured repository before fetch/worktree use.",
       "S-047: refreshed the durable heartbeat independently during active poll/execution cycles and cleaned up the timer.",
-      "S-047: guarded completion failure and Review bucket moves with the expected Running source bucket."
+      "S-047: guarded completion failure and Review bucket moves with the expected Running source bucket.",
+      "S-048: re-read remote task state after every failed claim mutation so a lost Ready-to-Running response is compensated safely.",
+      "S-048: persist configured repository identity and carry retry branch/worktree artifacts only when both project and repository identities match.",
+      "S-048: share the independent heartbeat refresher with resumed conductor jobs and add claim, retry, and resume-heartbeat regressions.",
+      "S-048 remediation: failed claim move intents are terminally superseded before failed-job finalization; guarded expected-Running recovery intents prevent stale replay from resurrecting Ready or human-selected tasks, with observed-Ready and unreadable-re-read regressions.",
+      "S-048 remediation follow-up: startup reconciliation now terminally suppresses pending non-Failed moves belonging to failed jobs before any remote replay; guarded Failed moves remain eligible, and regressions prove Ready is not resurrected or a failed task advanced to Review."
     ],
-    "current_protection_notes": "Preserved the controlling specification, host-generated .pi-conductor artifacts, and all prior approved implementation slices. S-047 changes are limited to the six PR #1 review findings and their regression tests; no rendered UI changed."
+    "current_protection_notes": "Preserved the controlling specification, host-generated .pi-conductor artifacts, and all prior approved implementation slices including S-047. S-048 remediation is limited to the reviewer finding on stale durable mutation replay; the repository/retry and resumed-heartbeat fixes remain in the same slice. No rendered UI changed."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-02T13:25:00Z"
+  "updated_at": "2026-08-02T14:19:00Z"
 }

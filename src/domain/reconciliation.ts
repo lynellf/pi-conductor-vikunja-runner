@@ -62,6 +62,36 @@ export async function reconcileStartup(
   let mutationFailures = 0;
   for (const intent of await input.store.pendingMutationIntents()) {
     try {
+      // Once a job is terminally failed, only a guarded move into its Failed
+      // bucket remains applicable. Any other pending move belongs to an
+      // earlier lifecycle stage (for example Ready -> Running or Running ->
+      // Review) and could resurrect or overwrite the failed task on restart.
+      // Mark it terminal without touching Vikunja; the explicit failure move
+      // remains eligible for guarded replay.
+      if (intent.operation === "move_task" && intent.jobId !== null) {
+        const job = await input.store.getJob(intent.jobId);
+        if (job?.state === "failed") {
+          const layout = input.layouts.get(job.projectId);
+          const request =
+            typeof intent.request === "object" &&
+            intent.request !== null &&
+            !Array.isArray(intent.request)
+              ? (intent.request as ReconciliationRequest)
+              : null;
+          const targetBucket = request === null ? undefined : request.bucketId;
+          if (
+            layout === undefined ||
+            targetBucket !== layout.buckets.Failed.id
+          ) {
+            await input.store.failMutation(
+              intent.idempotencyKey,
+              "move belongs to a terminally failed job",
+            );
+            mutationFailures += 1;
+            continue;
+          }
+        }
+      }
       // VikunjaHttpGateway resolves project/view routes from a prior task read.
       // Hydrate that location before replaying route-dependent mutations so a
       // fresh process can recover durable moves and assignments.

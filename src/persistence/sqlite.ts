@@ -30,7 +30,7 @@ import type {
 } from "./contracts.js";
 import { milestoneId, mutationIntentId, questionId } from "./contracts.js";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 interface JobRow {
   readonly id: string;
@@ -167,6 +167,9 @@ const MIGRATIONS: readonly string[] = [
   `,
   `
     ALTER TABLE questions ADD COLUMN abort_reason TEXT;
+  `,
+  `
+    ALTER TABLE jobs ADD COLUMN repository TEXT;
   `,
 ];
 
@@ -441,21 +444,30 @@ export class SqliteJobStore implements JobStore {
     return row?.updated_at ?? null;
   }
 
-  public async tryClaim(task: CodingTask): Promise<Job | null> {
+  public async tryClaim(
+    task: CodingTask,
+    repository?: string,
+  ): Promise<Job | null> {
     const timestamp = now();
     const id = jobId(randomUUID());
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const previous = this.database
         .prepare(
-          `SELECT attempt, branch, worktree
+          `SELECT attempt, project_id, repository, branch, worktree
            FROM jobs
            WHERE task_id = ?
            ORDER BY attempt DESC
            LIMIT 1`,
         )
         .get(task.id) as
-        | { attempt: number; branch: string | null; worktree: string | null }
+        | {
+            attempt: number;
+            project_id: number;
+            repository: string | null;
+            branch: string | null;
+            worktree: string | null;
+          }
         | undefined;
       const attempt =
         (previous === undefined ? 0 : asInteger(previous.attempt, "attempt")) +
@@ -463,16 +475,23 @@ export class SqliteJobStore implements JobStore {
       this.database
         .prepare(
           `INSERT INTO jobs
-           (id, task_id, project_id, attempt, state, branch, worktree, conductor_run_id, created_at, updated_at, terminal_error_code)
-           VALUES (?, ?, ?, ?, 'claiming', ?, ?, NULL, ?, ?, NULL)`,
+           (id, task_id, project_id, attempt, state, repository, branch, worktree, conductor_run_id, created_at, updated_at, terminal_error_code)
+           VALUES (?, ?, ?, ?, 'claiming', ?, ?, ?, NULL, ?, ?, NULL)`,
         )
         .run(
           id,
           task.id,
           task.projectId,
           attempt,
-          previous?.branch ?? null,
-          previous?.worktree ?? null,
+          repository ?? null,
+          previous?.project_id === task.projectId &&
+            previous.repository === (repository ?? null)
+            ? (previous.branch ?? null)
+            : null,
+          previous?.project_id === task.projectId &&
+            previous.repository === (repository ?? null)
+            ? (previous.worktree ?? null)
+            : null,
           timestamp,
           timestamp,
         );

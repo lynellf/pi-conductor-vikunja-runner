@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseConfig } from "../src/config/config.js";
+import { claimReadyTask } from "../src/domain/claiming.js";
 import { validateProjectLayout } from "../src/domain/layout.js";
 import { reconcileStartup } from "../src/domain/reconciliation.js";
 import type { CodingTask, ProjectLayout } from "../src/domain/types.js";
@@ -56,6 +57,156 @@ const openStore = async (): Promise<SqliteJobStore> => {
 };
 
 describe("reconcileStartup", () => {
+  it("does not replay an ambiguous failed claim move onto a task still in Ready", async () => {
+    const store = await openStore();
+    const ready = task(2);
+    let remote = ready;
+    let reads = 0;
+    let moves = 0;
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => {
+        reads += 1;
+        if (reads === 2) throw new Error("remote read unavailable");
+        return remote;
+      },
+      moveTask: async (_taskId, bucket) => {
+        moves += 1;
+        if (moves === 1) throw new Error("move response lost");
+        remote = { ...remote, bucketId: bucket };
+      },
+      assignRunner: async () => undefined,
+      listComments: async () => [],
+      postComment: async () => commentId(100),
+    };
+
+    const claim = await claimReadyTask({
+      task: ready,
+      layout: layout(),
+      store,
+      gateway,
+    });
+    expect(claim.status).toBe("failed");
+    if (claim.status !== "failed")
+      throw new Error("claim unexpectedly succeeded");
+    const moveKey = `job:${claim.job.id}:claim:move`;
+    const recoveryKey = `job:${claim.job.id}:claim:move-failed`;
+    expect(await store.getMutationIntent(moveKey)).toMatchObject({
+      state: "failed",
+    });
+    expect(await store.getMutationIntent(recoveryKey)).toMatchObject({
+      state: "pending",
+    });
+
+    const report = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(report.mutationsReplayed).toBe(1);
+    expect(moves).toBe(1);
+    expect(remote.bucketId).toBe(bucketId(2));
+    expect(await store.getMutationIntent(recoveryKey)).toMatchObject({
+      state: "succeeded",
+    });
+  });
+
+  it("suppresses a stale pending claim move for an already-failed job", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, {
+      state: "failed",
+      terminalErrorCode: "VIKUNJA_UNAVAILABLE",
+    });
+    const key = `job:${claimed.id}:claim:move`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "move_task",
+      idempotencyKey: key,
+      request: { bucketId: 3, expectedBucketId: 2 },
+    });
+    let moves = 0;
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(2),
+      moveTask: async () => {
+        moves += 1;
+      },
+      assignRunner: async () => undefined,
+      listComments: async () => [],
+      postComment: async () => commentId(100),
+    };
+
+    const report = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(report.mutationsReplayed).toBe(0);
+    expect(report.mutationFailures).toBe(1);
+    expect(moves).toBe(0);
+    expect(await store.getMutationIntent(key)).toMatchObject({
+      state: "failed",
+    });
+  });
+
+  it("replays a guarded recovery when startup later confirms Running", async () => {
+    const store = await openStore();
+    const ready = task(2);
+    let remote = ready;
+    let reads = 0;
+    let moves = 0;
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => {
+        reads += 1;
+        if (reads === 2) throw new Error("remote read unavailable");
+        return remote;
+      },
+      moveTask: async (_taskId, bucket) => {
+        moves += 1;
+        if (moves === 1) throw new Error("move response lost");
+        remote = { ...remote, bucketId: bucket };
+      },
+      assignRunner: async () => undefined,
+      listComments: async () => [],
+      postComment: async () => commentId(100),
+    };
+
+    const claim = await claimReadyTask({
+      task: ready,
+      layout: layout(),
+      store,
+      gateway,
+    });
+    if (claim.status !== "failed")
+      throw new Error("claim unexpectedly succeeded");
+    const recoveryKey = `job:${claim.job.id}:claim:move-failed`;
+    remote = { ...ready, bucketId: layout().buckets.Running.id };
+
+    await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(moves).toBe(2);
+    expect(remote.bucketId).toBe(bucketId(6));
+    expect(await store.getMutationIntent(recoveryKey)).toMatchObject({
+      state: "succeeded",
+    });
+  });
+
   it("fails an unresolved waiting question safely and records one failure comment", async () => {
     const store = await openStore();
     const claimed = await store.tryClaim(task(2));
@@ -599,6 +750,48 @@ describe("reconcileStartup", () => {
     expect((await store.getMutationIntent("job:assign:20"))?.state).toBe(
       "succeeded",
     );
+  });
+
+  it("suppresses a stale Review move after a job has failed", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "move_task",
+      idempotencyKey: `job:${claimed.id}:completion:move-review`,
+      request: { bucketId: 5, expectedBucketId: 3 },
+    });
+    await store.transition(claimed.id, {
+      state: "failed",
+      terminalErrorCode: "VERIFY_FAILED",
+    });
+    const moves: number[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(3),
+      moveTask: async (_taskId, bucket) => moves.push(bucket),
+      assignRunner: async () => undefined,
+      listComments: async () => [],
+      postComment: async () => commentId(590),
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result.mutationsReplayed).toBe(0);
+    expect(result.mutationFailures).toBe(1);
+    expect(moves).toEqual([]);
+    expect(
+      await store.getMutationIntent(`job:${claimed.id}:completion:move-review`),
+    ).toMatchObject({ state: "failed" });
   });
 
   it("suppresses a delayed guarded failure move after an owner bucket override", async () => {

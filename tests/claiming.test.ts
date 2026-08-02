@@ -62,6 +62,7 @@ const makeStore = (
 ) => {
   const transitions: Array<Parameters<JobStore["transition"]>[1]> = [];
   const mutationCalls: string[] = [];
+  const failedMutationCalls: string[] = [];
   const milestones = new Map<
     string,
     { id: string; commentId: null | ReturnType<typeof taskId> }
@@ -69,6 +70,7 @@ const makeStore = (
   const store = {
     transitions,
     mutationCalls,
+    failedMutationCalls,
     async tryClaim() {
       return remoteJob;
     },
@@ -98,6 +100,10 @@ const makeStore = (
       };
     },
     async completeMutation() {
+      return {} as never;
+    },
+    async failMutation(idempotencyKey: string) {
+      failedMutationCalls.push(idempotencyKey);
       return {} as never;
     },
     async recordMilestone(input: { idempotencyKey: string }) {
@@ -237,6 +243,70 @@ describe("claimReadyTask", () => {
     expect(gateway.comments[0]).toHaveLength(80);
     expect(gateway.comments[0]).toContain("CLAIM_CONFLICT");
     expect(gateway.comments[0]).toContain("[truncated]");
+  });
+
+  it("reconciles an ambiguous move failure before finalizing the claim", async () => {
+    const store = makeStore();
+    const events: string[] = [];
+    let reads = 0;
+    const gateway = {
+      async getTask() {
+        reads += 1;
+        return reads === 1
+          ? task
+          : { ...task, bucketId: layout.buckets.Running.id };
+      },
+      async moveTask() {
+        events.push("move");
+        throw new Error("response lost after remote mutation");
+      },
+      async assignRunner() {
+        events.push("assign");
+      },
+      async postComment() {
+        events.push("comment");
+        return 100 as ReturnType<typeof taskId>;
+      },
+    } as unknown as VikunjaGateway;
+
+    const result = await claimReadyTask({ task, layout, store, gateway });
+
+    expect(result.status).toBe("failed");
+    expect(result.job.terminalErrorCode).toBe("VIKUNJA_UNAVAILABLE");
+    expect(events).toEqual(["move", "move", "comment"]);
+    expect(store.failedMutationCalls).toContain("job:job-1:claim:move");
+    expect(store.mutationCalls).toContain("job:job-1:claim:move-failed");
+  });
+
+  it("supersedes a failed move intent when the task is observed Ready", async () => {
+    const store = makeStore();
+    const events: string[] = [];
+    let reads = 0;
+    const gateway = {
+      async getTask() {
+        reads += 1;
+        return task;
+      },
+      async moveTask() {
+        events.push("move");
+        throw new Error("move failed before remote mutation");
+      },
+      async assignRunner() {
+        events.push("assign");
+      },
+      async postComment() {
+        events.push("comment");
+        return 100 as ReturnType<typeof taskId>;
+      },
+    } as unknown as VikunjaGateway;
+
+    const result = await claimReadyTask({ task, layout, store, gateway });
+
+    expect(reads).toBe(2);
+    expect(result.status).toBe("failed");
+    expect(store.failedMutationCalls).toContain("job:job-1:claim:move");
+    expect(store.mutationCalls).not.toContain("job:job-1:claim:move-failed");
+    expect(events).toEqual(["move", "comment"]);
   });
 
   it("compensates a task to Failed when assignment fails after the Running move", async () => {
