@@ -232,24 +232,39 @@ const failCompletedJob = async (
       cause,
     );
   }
-  const failed = await input.store.transition(input.job.id, {
-    state: "failed",
-    terminalErrorCode: code,
-  });
   const moveKey = `job:${input.job.id}:completion:move-failed:${code.toLowerCase()}`;
+  const moveRequest = {
+    bucketId: input.layout.buckets.Failed.id,
+    expectedBucketId: input.layout.buckets.Running.id,
+  };
+  const commentKey = `job:${input.job.id}:completion:${code.toLowerCase()}`;
+  const commentRequest = { body: failureComment(input, code, detail) };
+  // Releasing the active slot and recording its remote consequences is one
+  // local transaction. A crash can leave delivery pending, but can never
+  // leave a terminal job with no action for startup reconciliation to replay.
+  const failed = await input.store.recordTerminalFailure(input.job.id, code, [
+    {
+      jobId: input.job.id,
+      taskId: input.job.taskId,
+      operation: "move_task",
+      idempotencyKey: moveKey,
+      request: moveRequest,
+    },
+    {
+      jobId: input.job.id,
+      taskId: input.job.taskId,
+      operation: "post_comment",
+      idempotencyKey: commentKey,
+      request: commentRequest,
+    },
+  ]);
   try {
-    await mutation(input, "move_task", moveKey, {
-      bucketId: input.layout.buckets.Failed.id,
-      expectedBucketId: input.layout.buckets.Running.id,
-    });
+    await mutation(input, "move_task", moveKey, moveRequest);
   } catch {
     // Keep the move intent pending so startup reconciliation can retry it.
   }
-  const key = `job:${input.job.id}:completion:${code.toLowerCase()}`;
   try {
-    await mutation(input, "post_comment", key, {
-      body: failureComment(input, code, detail),
-    });
+    await mutation(input, "post_comment", commentKey, commentRequest);
   } catch {
     // Keep the completed failure durable; pending intents are replayed later.
   }

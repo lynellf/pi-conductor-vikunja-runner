@@ -558,6 +558,42 @@ export class SqliteJobStore implements JobStore {
     return this.getJobSync(id);
   }
 
+  public async recordTerminalFailure(
+    id: JobId,
+    terminalErrorCode: TerminalErrorCode,
+    intents: readonly NewRemoteMutationIntent[],
+  ): Promise<Job> {
+    if (intents.length === 0) {
+      throw new Error("terminal failure requires at least one mutation intent");
+    }
+    const current = this.getJobSync(id);
+    if (!legalJobTransition(current.state, "failed")) {
+      throw new Error(`illegal job transition ${current.state} -> failed`);
+    }
+    for (const intent of intents) {
+      if (intent.jobId !== id || intent.taskId !== current.taskId) {
+        throw new Error("terminal failure intent does not match its job");
+      }
+    }
+
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const intent of intents) this.recordMutationIntentSync(intent);
+      const result = this.database
+        .prepare(
+          "UPDATE jobs SET state = 'failed', terminal_error_code = ?, updated_at = ? WHERE id = ? AND state = ?",
+        )
+        .run(terminalErrorCode, now(), id, current.state);
+      if (result.changes !== 1)
+        throw new Error(`job ${id} changed concurrently`);
+      this.database.exec("COMMIT");
+      return this.getJobSync(id);
+    } catch (error) {
+      rollback(this.database);
+      throw error;
+    }
+  }
+
   public async recoverableJobs(): Promise<readonly Job[]> {
     const rows = this.database
       .prepare(
@@ -843,64 +879,7 @@ export class SqliteJobStore implements JobStore {
   public async recordMutationIntent(
     input: NewRemoteMutationIntent,
   ): Promise<RemoteMutationIntent> {
-    nonEmpty(input.operation, "mutation operation");
-    nonEmpty(input.idempotencyKey, "mutation idempotency key");
-    const request = JSON.stringify(input.request) ?? "null";
-    const existing = this.getMutationIntentSync(input.idempotencyKey);
-    if (existing !== null) {
-      if (
-        existing.operation !== input.operation ||
-        existing.jobId !== input.jobId ||
-        existing.taskId !== input.taskId ||
-        JSON.stringify(existing.request) !== request
-      ) {
-        throw new Error(
-          `mutation idempotency key ${input.idempotencyKey} is already used`,
-        );
-      }
-      return existing;
-    }
-    const timestamp = now();
-    const id = mutationIntentId(randomUUID());
-    try {
-      this.database
-        .prepare(
-          `INSERT INTO remote_mutation_intents
-           (id, job_id, task_id, operation, idempotency_key, request_json, state, remote_id, error, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`,
-        )
-        .run(
-          id,
-          input.jobId,
-          input.taskId,
-          input.operation,
-          input.idempotencyKey,
-          request,
-          timestamp,
-          timestamp,
-        );
-    } catch (error) {
-      if (this.isConstraintError(error)) {
-        const raced = this.getMutationIntentSync(input.idempotencyKey);
-        if (raced !== null) {
-          if (
-            raced.operation !== input.operation ||
-            raced.jobId !== input.jobId ||
-            raced.taskId !== input.taskId ||
-            JSON.stringify(raced.request) !== request
-          ) {
-            throw new Error(
-              `mutation idempotency key ${input.idempotencyKey} is already used`,
-            );
-          }
-          return raced;
-        }
-      }
-      throw error;
-    }
-    return this.getMutationIntentSync(
-      input.idempotencyKey,
-    ) as RemoteMutationIntent;
+    return this.recordMutationIntentSync(input);
   }
 
   public async getMutationIntent(
@@ -961,6 +940,69 @@ export class SqliteJobStore implements JobStore {
       )
       .run(error, now(), idempotencyKey);
     return this.getMutationIntentSync(idempotencyKey) as RemoteMutationIntent;
+  }
+
+  private recordMutationIntentSync(
+    input: NewRemoteMutationIntent,
+  ): RemoteMutationIntent {
+    nonEmpty(input.operation, "mutation operation");
+    nonEmpty(input.idempotencyKey, "mutation idempotency key");
+    const request = JSON.stringify(input.request) ?? "null";
+    const existing = this.getMutationIntentSync(input.idempotencyKey);
+    if (existing !== null) {
+      if (
+        existing.operation !== input.operation ||
+        existing.jobId !== input.jobId ||
+        existing.taskId !== input.taskId ||
+        JSON.stringify(existing.request) !== request
+      ) {
+        throw new Error(
+          `mutation idempotency key ${input.idempotencyKey} is already used`,
+        );
+      }
+      return existing;
+    }
+    const timestamp = now();
+    const id = mutationIntentId(randomUUID());
+    try {
+      this.database
+        .prepare(
+          `INSERT INTO remote_mutation_intents
+           (id, job_id, task_id, operation, idempotency_key, request_json, state, remote_id, error, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`,
+        )
+        .run(
+          id,
+          input.jobId,
+          input.taskId,
+          input.operation,
+          input.idempotencyKey,
+          request,
+          timestamp,
+          timestamp,
+        );
+    } catch (error) {
+      if (this.isConstraintError(error)) {
+        const raced = this.getMutationIntentSync(input.idempotencyKey);
+        if (raced !== null) {
+          if (
+            raced.operation !== input.operation ||
+            raced.jobId !== input.jobId ||
+            raced.taskId !== input.taskId ||
+            JSON.stringify(raced.request) !== request
+          ) {
+            throw new Error(
+              `mutation idempotency key ${input.idempotencyKey} is already used`,
+            );
+          }
+          return raced;
+        }
+      }
+      throw error;
+    }
+    return this.getMutationIntentSync(
+      input.idempotencyKey,
+    ) as RemoteMutationIntent;
   }
 
   private getQuestionSync(id: QuestionId): Question {

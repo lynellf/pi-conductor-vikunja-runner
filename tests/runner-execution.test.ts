@@ -93,6 +93,18 @@ const makeInput = (): {
     async getJob() {
       return current;
     },
+    async recordTerminalFailure(
+      _id: Job["id"],
+      terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      intents: Parameters<JobStore["recordMutationIntent"]>[0][],
+    ) {
+      for (const intent of intents) {
+        await store.recordMutationIntent(intent);
+      }
+      current = { ...current, state: "failed", terminalErrorCode };
+      events.push("transition:failed");
+      return current;
+    },
     async transition(
       _id: Job["id"],
       transition: Parameters<JobStore["transition"]>[1],

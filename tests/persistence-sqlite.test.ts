@@ -240,6 +240,72 @@ describe("SqliteJobStore", () => {
     expect(failed.terminalErrorCode).toBe("WAIT_INTERRUPTED");
   });
 
+  it("atomically records terminal failure intents with the job transition", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(30));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    const moveKey = `job:${claimed.id}:failure:move`;
+    const commentKey = `job:${claimed.id}:failure:comment`;
+
+    const failed = await store.recordTerminalFailure(
+      claimed.id,
+      "VERIFY_FAILED",
+      [
+        {
+          jobId: claimed.id,
+          taskId: claimed.taskId,
+          operation: "move_task",
+          idempotencyKey: moveKey,
+          request: { bucketId: 6, expectedBucketId: 3 },
+        },
+        {
+          jobId: claimed.id,
+          taskId: claimed.taskId,
+          operation: "post_comment",
+          idempotencyKey: commentKey,
+          request: { body: "Verification failed" },
+        },
+      ],
+    );
+
+    expect(failed).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "VERIFY_FAILED",
+    });
+    expect(await store.getMutationIntent(moveKey)).toMatchObject({
+      state: "pending",
+    });
+    expect(await store.getMutationIntent(commentKey)).toMatchObject({
+      state: "pending",
+    });
+  });
+
+  it("rolls back failure intents when their terminal transition cannot commit", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(31));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    const key = `job:${claimed.id}:failure:move`;
+
+    await expect(
+      store.recordTerminalFailure(claimed.id, "VERIFY_FAILED", [
+        {
+          jobId: claimed.id,
+          taskId: taskId(999),
+          operation: "move_task",
+          idempotencyKey: key,
+          request: { bucketId: 6, expectedBucketId: 3 },
+        },
+      ]),
+    ).rejects.toThrow("does not match its job");
+
+    expect(await store.getJob(claimed.id)).toMatchObject({
+      state: "claiming",
+      terminalErrorCode: null,
+    });
+    expect(await store.getMutationIntent(key)).toBeNull();
+  });
+
   it("durably records a question, answer, and monotonic comment watermark", async () => {
     const store = await openStore();
     const claimed = await store.tryClaim(task(20));

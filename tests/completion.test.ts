@@ -116,6 +116,22 @@ const makeInput = (overrides: Record<string, unknown> = {}) => {
     async getJob() {
       return current;
     },
+    async recordTerminalFailure(
+      _id: Job["id"],
+      terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      intents: Parameters<JobStore["recordMutationIntent"]>[0][],
+    ) {
+      for (const intent of intents) {
+        await store.recordMutationIntent(intent);
+      }
+      events.push("transition:failed");
+      current = {
+        ...current,
+        state: "failed",
+        terminalErrorCode,
+      };
+      return current;
+    },
     async transition(
       _id: Job["id"],
       transition: Parameters<JobStore["transition"]>[1],
@@ -450,6 +466,75 @@ describe("completeConductorJob", () => {
     ).rejects.toBeInstanceOf(JobCompletionError);
     expect(dependencies.events).toContain("transition:failed");
     expect(dependencies.events).not.toContain("publish");
+  });
+
+  it("atomically persists failure intents before exposing a terminal job", async () => {
+    const dependencies = makeInput();
+    let recordedAtomically = false;
+    const original = dependencies.input.store.recordTerminalFailure.bind(
+      dependencies.input.store,
+    );
+    dependencies.input.store.recordTerminalFailure = async (
+      id,
+      terminalErrorCode,
+      intents,
+    ) => {
+      expect(intents.map((intent) => intent.idempotencyKey)).toEqual([
+        "job:job-1:completion:move-failed:verify_failed",
+        "job:job-1:completion:verify_failed",
+      ]);
+      recordedAtomically = true;
+      return original(id, terminalErrorCode, intents);
+    };
+    dependencies.input.repository = {
+      async verify() {
+        return { ...passingVerification, passed: false };
+      },
+      async publish() {
+        return localPublish;
+      },
+    } as unknown as RepositoryManager;
+
+    await expect(
+      completeConductorJob(dependencies.input),
+    ).rejects.toBeInstanceOf(JobCompletionError);
+
+    expect(recordedAtomically).toBe(true);
+    expect(dependencies.current).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "VERIFY_FAILED",
+    });
+    expect(
+      dependencies.mutations.get(
+        "job:job-1:completion:move-failed:verify_failed",
+      ),
+    ).toBeDefined();
+    expect(
+      dependencies.mutations.get("job:job-1:completion:verify_failed"),
+    ).toBeDefined();
+  });
+
+  it("does not make a job terminal when failure intent persistence fails", async () => {
+    const dependencies = makeInput();
+    dependencies.input.store.recordTerminalFailure = async () => {
+      throw new Error("database unavailable");
+    };
+    dependencies.input.repository = {
+      async verify() {
+        return { ...passingVerification, passed: false };
+      },
+      async publish() {
+        return localPublish;
+      },
+    } as unknown as RepositoryManager;
+
+    await expect(completeConductorJob(dependencies.input)).rejects.toThrow(
+      "database unavailable",
+    );
+
+    expect(dependencies.current.state).toBe("running");
+    expect(dependencies.events).toEqual(["completion"]);
+    expect(dependencies.mutations.size).toBe(0);
   });
 
   it("retains a pending Failed-bucket intent when the remote move is unavailable", async () => {

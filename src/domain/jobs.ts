@@ -61,6 +61,12 @@ export interface JobStore extends DaemonHeartbeatStore {
   recordRunId(jobId: JobId, runId: string): Promise<void>;
   recordWorktree(jobId: JobId, branch: string, worktree: string): Promise<Job>;
   transition(jobId: JobId, transition: JobTransition): Promise<Job>;
+  /** Atomically release an active job and persist every remote failure action. */
+  recordTerminalFailure(
+    jobId: JobId,
+    terminalErrorCode: TerminalErrorCode,
+    intents: readonly NewRemoteMutationIntent[],
+  ): Promise<Job>;
   recoverableJobs(): Promise<readonly Job[]>;
   pendingQuestions(): Promise<readonly Question[]>;
   createQuestion(input: NewQuestion): Promise<Question>;
