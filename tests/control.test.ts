@@ -51,6 +51,9 @@ const makeDeps = () => {
   const comments: string[] = [];
   const milestones = new Map<string, Milestone>();
   const store = {
+    async getJob() {
+      return job;
+    },
     async getMilestone(_jobId: Job["id"], key: string) {
       return milestones.get(key) ?? null;
     },
@@ -194,6 +197,33 @@ describe("executePiComment", () => {
       deliveryState: "delivered",
       commentId: commentId(103),
     });
+  });
+
+  it("does not steer when the durable job entered Waiting after monitor startup", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const staleRunningJob = job;
+    const waitingJob = { ...job, state: "waiting" as const };
+    const store = {
+      ...deps.store,
+      async getJob() {
+        return waitingJob;
+      },
+    } as unknown as JobStore;
+
+    await expect(
+      executePiComment({
+        job: staleRunningJob,
+        commentId: commentId(26),
+        action: { kind: "steer", message: "must not dispatch" },
+        handle: handle(calls),
+        store,
+        gateway: deps.gateway,
+      }),
+    ).resolves.toEqual({ status: "ignored" });
+
+    expect(calls).toEqual([]);
+    expect(deps.comments).toEqual([]);
   });
 
   it("aborts while waiting and includes the owner reason in one acknowledgement", async () => {
@@ -391,13 +421,20 @@ describe("executePiComment", () => {
     const deps = makeDeps();
     const calls: string[] = [];
 
+    const waitingJob = { ...job, state: "waiting" as const };
+    const waitingStore = {
+      ...deps.store,
+      async getJob() {
+        return waitingJob;
+      },
+    } as unknown as JobStore;
     await expect(
       executePiComment({
-        job: { ...job, state: "waiting" },
+        job: waitingJob,
         commentId: commentId(22),
         action: { kind: "steer", message: "not now" },
         handle: handle(calls),
-        store: deps.store,
+        store: waitingStore,
         gateway: deps.gateway,
       }),
     ).resolves.toEqual({ status: "ignored" });

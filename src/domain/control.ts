@@ -118,7 +118,10 @@ export const executePiComment = async (
 
   const keyBase = `job:${input.job.id}:comment:${input.commentId}`;
   if (action.kind === "steer") {
-    if (input.job.state !== "running") return { status: "ignored" };
+    // The monitor retains its startup snapshot while ask_user transitions the
+    // durable row to Waiting. Dispatch only from the current persisted state.
+    const currentJob = await input.store.getJob(input.job.id);
+    if (currentJob?.state !== "running") return { status: "ignored" };
     const key = `${keyBase}:steer`;
     const existing = await input.store.getMilestone(input.job.id, key);
     if (existing === null) {
