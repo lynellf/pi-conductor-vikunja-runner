@@ -428,7 +428,16 @@ describe("runner daemon", () => {
     resolveSleep?.();
   });
 
-  it("reports a recovered conductor start failure to Vikunja", async () => {
+  it.each([
+    {
+      stage: "repository",
+      terminalErrorCode: "REPOSITORY_PREPARE_FAILED",
+    },
+    { stage: "conductor", terminalErrorCode: "CONDUCTOR_START_FAILED" },
+  ] as const)("atomically persists and reports a recovered $stage failure", async ({
+    stage,
+    terminalErrorCode,
+  }) => {
     const project = config().projects["42"];
     if (project === undefined) throw new Error("test project missing");
     const recoveredJob: Job = {
@@ -470,18 +479,25 @@ describe("runner daemon", () => {
       async recoverableJobs() {
         return [recoveredJob];
       },
-      async transition(
+      async transition() {
+        throw new Error("standalone terminal transition is not crash-safe");
+      },
+      async recordTerminalFailure(
         _id: Job["id"],
-        transition: {
-          state: "failed";
-          terminalErrorCode: Job["terminalErrorCode"];
-        },
+        terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+        intents: readonly { idempotencyKey: string }[],
       ) {
         persisted = {
           ...persisted,
-          state: transition.state,
-          terminalErrorCode: transition.terminalErrorCode,
+          state: "failed",
+          terminalErrorCode,
         };
+        for (const intent of intents) {
+          mutations.set(intent.idempotencyKey, {
+            state: "pending",
+            remoteId: null,
+          });
+        }
         return persisted;
       },
       async recordMutationIntent(input: { idempotencyKey: string }) {
@@ -524,6 +540,7 @@ describe("runner daemon", () => {
         gateway,
         repository: {
           async prepare() {
+            if (stage === "repository") throw new Error("git unavailable");
             return {
               repository: "/var/lib/runner/repositories/42/repo",
               branch: recoveredJob.branch ?? "",
@@ -543,9 +560,9 @@ describe("runner daemon", () => {
     });
 
     expect(resumed).toBe(0);
-    expect(persisted.terminalErrorCode).toBe("CONDUCTOR_START_FAILED");
+    expect(persisted.terminalErrorCode).toBe(terminalErrorCode);
     expect(moves).toEqual([6]);
-    expect(comments[0]).toContain("CONDUCTOR_START_FAILED");
+    expect(comments[0]).toContain(terminalErrorCode);
     expect(errors).toHaveLength(1);
   });
 

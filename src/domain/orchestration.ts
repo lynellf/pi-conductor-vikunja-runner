@@ -54,9 +54,11 @@ export type StartClaimedJobResult = {
 
 export interface ResumeRecoverableJobInput {
   readonly job: Job;
+  readonly layout: ProjectLayout;
   readonly store: JobStore;
   readonly conductor: ConductorGateway;
   readonly ui: RunnerUiContext;
+  readonly maxCommentChars?: number;
 }
 
 export type ResumedJobResult = {
@@ -125,9 +127,16 @@ export const resumeRecoverableJob = async (
         // Preserve the durable failure; a later reconciliation can inspect it.
       }
     }
-    const failed = await input.store.transition(input.job.id, {
-      state: "failed",
+    const failed = await recordTerminalJobFailure({
+      job: input.job,
+      layout: input.layout,
+      store: input.store,
+      expectedBucketId: input.layout.buckets.Running.id,
       terminalErrorCode: "CONDUCTOR_START_FAILED",
+      detail: "conductor resume failed",
+      ...(input.maxCommentChars === undefined
+        ? {}
+        : { maxCommentChars: input.maxCommentChars }),
     });
     throw new JobStartError("conductor resume failed", failed, error);
   }

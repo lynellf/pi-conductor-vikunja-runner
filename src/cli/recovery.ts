@@ -7,6 +7,7 @@ import {
   attachShutdownAbort,
   completeConductorJob,
   JobStartError,
+  recordTerminalJobFailure,
   reportTerminalJobFailure,
   resumeRecoverableJob,
 } from "../domain/orchestration.js";
@@ -97,18 +98,25 @@ export const defaultResumeJobs = async (
       try {
         worktree = await input.runtime.repository.prepare(job, project);
       } catch (error) {
-        const failed = await input.runtime.store.transition(job.id, {
-          state: "failed",
+        const failed = await recordTerminalJobFailure({
+          job,
+          layout,
+          store: input.runtime.store,
+          expectedBucketId: layout.buckets.Running.id,
           terminalErrorCode: "REPOSITORY_PREPARE_FAILED",
+          detail: "repository recovery failed",
+          maxCommentChars: input.config.runner.maxCommentChars,
         });
         throw new JobStartError("repository recovery failed", failed, error);
       }
       const ui = uiForJob(input.runtime, input.config, job, layout);
       const recovered = await resumeRecoverableJob({
         job,
+        layout,
         store: input.runtime.store,
         conductor: input.runtime.conductor,
         ui,
+        maxCommentChars: input.config.runner.maxCommentChars,
       });
       const monitor = startPiCommentMonitor({
         job: recovered.job,

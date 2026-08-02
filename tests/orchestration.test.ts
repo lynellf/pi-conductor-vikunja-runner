@@ -222,7 +222,18 @@ describe("resumeRecoverableJob", () => {
         terminalErrorCode: "CONDUCTOR_START_FAILED",
       }),
     });
-    expect(dependencies.events).toContain("transition:failed");
+    expect(dependencies.events).toContain("terminal:CONDUCTOR_START_FAILED");
+    expect(dependencies.terminalIntents).toEqual([
+      expect.objectContaining({
+        operation: "move_task",
+        idempotencyKey: "job:job-1:terminal:conductor_start_failed:move",
+        request: { bucketId: 6, expectedBucketId: 3 },
+      }),
+      expect.objectContaining({
+        operation: "post_comment",
+        idempotencyKey: "job:job-1:terminal:conductor_start_failed:comment",
+      }),
+    ]);
   });
 
   it("fails when the resumed job cannot be reloaded", async () => {
@@ -254,7 +265,8 @@ describe("resumeRecoverableJob", () => {
         terminalErrorCode: "CONDUCTOR_START_FAILED",
       }),
     });
-    expect(dependencies.events).toContain("transition:failed");
+    expect(dependencies.events).toContain("terminal:CONDUCTOR_START_FAILED");
+    expect(dependencies.terminalIntents).toHaveLength(2);
   });
 
   it("does not resume a waiting job without replaying its dialog", async () => {
