@@ -9,61 +9,515 @@
   },
   "status": "active",
   "candidate_complete": false,
-  "active_slice": {
-    "id": "S-001",
-    "objective": "Establish a strict TypeScript configuration contract and validate the required Vikunja workflow layout.",
-    "source_refs": [
-      "§2 assumptions 4-6",
-      "§5.1 Bucket authority",
-      "§7 Configuration contract",
-      "§17 Module interfaces",
-      "§23 acceptance criteria 1 and 3"
-    ],
-    "acceptance_checks": [
-      {
-        "id": "S-001-A1",
-        "statement": "Configuration accepts the documented shape, uses numeric project IDs, rejects unknown fields, enforces version-1 concurrency, and applies the private-network HTTP rule.",
-        "evidence": "tests/config.test.ts: 5 passing tests; pnpm typecheck; pnpm build"
-      },
-      {
-        "id": "S-001-A2",
-        "statement": "Workflow validation requires exactly one named bucket for each required workflow name and enforces Backlog as default and Done as done bucket.",
-        "evidence": "tests/domain-layout.test.ts: 4 passing tests; pnpm test"
-      }
-    ],
-    "implementation_status": "ready-for-review",
-    "review_status": "not-reviewed",
-    "files_changed": [
-      "package.json",
-      "pnpm-lock.yaml",
-      "pnpm-workspace.yaml",
-      "tsconfig.json",
-      "tsconfig.test.json",
-      "biome.json",
-      "config.example.yaml",
-      "src/config/config.ts",
-      "src/domain/types.ts",
-      "src/domain/layout.ts",
-      "src/index.ts",
-      "tests/config.test.ts",
-      "tests/domain-layout.test.ts"
-    ],
-    "tests_run": ["pnpm lint", "pnpm typecheck", "pnpm test", "pnpm build"],
-    "findings": []
-  },
-  "approved_slices": [],
+  "active_slice": null,
+  "approved_slices": [
+    {
+      "id": "S-046",
+      "objective": "Reject an existing conductor manifest symlink that resolves outside the prepared task worktree before invoking pi-conductor.",
+      "source_refs": [
+        "§8 Repository and worktree contract",
+        "§10 Pi Conductor integration",
+        "§16 Security requirements",
+        "§23 acceptance criteria 7 and 20"
+      ],
+      "approval_evidence": [
+        "S-046-A1 PASS: PiConductorGateway.contextFor is shared by start and resume, resolves an existing manifest through realpath, rejects a resolved target outside the real prepared worktree, and performs the API call only after validation. tests/conductor.test.ts exercises an external manifest symlink and asserts ConductorIntegrationError with zero injected API calls.",
+        "S-046-A2 PASS: existing start/resume gateway tests preserve the lexical missing-manifest boundary and in-worktree path composition; source inspection confirms an existing in-worktree manifest is realpath-resolved and passed safely to pi-conductor.",
+        "Independent verification: pnpm vitest run tests/conductor.test.ts (5 passed); pnpm test (26 files, 148 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json all passed. No rendered UI changed; UI review was not required. No blocking implementation findings."
+      ],
+      "approved_at": "2026-08-02T06:45:30Z"
+    },
+    {
+      "id": "S-044",
+      "objective": "Keep /pi control comments from being consumed as answers by a concurrent Vikunja ask_user dialog, so owner abort/steer/help commands remain available to the live command monitor.",
+      "source_refs": [
+        "§11.1 ask_user adapter",
+        "§11.2 Comment commands",
+        "§20 Integration tests",
+        "§23 acceptance criteria 8-11"
+      ],
+      "approval_evidence": [
+        "S-044-A1 PASS: createVikunjaQuestionUi skips owner-authored comments beginning with /pi without resolving the waiting question; a subsequent ordinary owner reply is accepted. tests/interaction-ui.test.ts regression passes.",
+        "S-044-A2 PASS: skipped /pi comments still advance the durable comment watermark, with the regression asserting watermarks [2, 3]; this leaves the live command monitor responsible for handling the control comment without repeated waiting-adapter processing.",
+        "Independent verification: pnpm vitest run tests/interaction-ui.test.ts (7 passed); pnpm test (26 files, 144 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json all passed. No rendered UI changed; UI review was not required. No blocking implementation findings.",
+        "Independent general review (2026-08-02T06:23Z): inspected src/vikunja/interaction-ui.ts and tests/interaction-ui.test.ts against §§11.1-11.2, §20, and §23 criteria 8-11. /pi-prefixed owner comments are skipped by the waiting adapter while each comment advances the durable watermark, leaving the concurrent monitor able to dispatch the command; subsequent plain replies still resolve normally. Focused test (7 passed), full test suite (26 files/144 tests), typecheck, build, lint, and git diff --check passed. No blocking implementation findings; no rendered UI changed."
+      ],
+      "approved_at": "2026-08-02T06:23:30Z"
+    },
+    {
+      "id": "S-043",
+      "objective": "Keep recoverable jobs durable when a transient Vikunja task read fails during startup reconciliation, without issuing a bucket mutation from unknown remote state.",
+      "source_refs": [
+        "§13 Error model",
+        "§14 Persistence and idempotency",
+        "§21 Operational behavior",
+        "§23 acceptance criteria 17 and 22"
+      ],
+      "approval_evidence": [
+        "S-043-A1 PASS: reconcileStartup isolates each recoverable job's remote getTask failure, leaves the job recoverable, and performs no move or comment without an observed remote task; tests/reconciliation.test.ts regression covers this exact boundary.",
+        "S-043-A2 PASS: waiting-question interruption, manual bucket preservation, interrupted claiming, and ordinary running/waiting reconciliation remain covered by the 12-test reconciliation suite; no behavior regression observed.",
+        "Independent verification: pnpm vitest run tests/reconciliation.test.ts (12 passed); pnpm test (26 files, 143 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json all passed. No rendered UI changed; UI review was not required. No blocking implementation findings."
+      ],
+      "approved_at": "2026-08-02T06:10:00Z"
+    },
+    {
+      "id": "S-042",
+      "objective": "Harden read-only runner validation against unsafe repository arguments, Git branch refs, and conductor manifest paths before any remote layout checks.",
+      "source_refs": [
+        "§7 Configuration contract",
+        "§8 Repository and worktree contract",
+        "§16 Security requirements",
+        "§19 Commands",
+        "§23 acceptance criteria 1 and 20"
+      ],
+      "approval_evidence": [
+        "S-042-A1 PASS: validateProjectConfiguration rejects repository and push remote values beginning with '-' before validateRunner invokes any gateway method; focused cli-validate coverage and source inspection confirm read-only behavior.",
+        "S-042-A2 PASS: validation rejects absolute and parent-escaping manifest paths plus unsafe Git branch refs, including HEAD, '..', component dot/lock forms, option-like, and malformed refs; focused cli-validate coverage passes.",
+        "S-042-A3 PASS: validateRunner checks both protected credentials and sorts every configured project by numeric ID before sequentially validating each Vikunja layout; independent two-project probe observed order 7,42.",
+        "Independent verification: pnpm vitest run tests/cli-validate.test.ts (6 passed), pnpm test (26 files, 140 tests), pnpm typecheck, pnpm build, pnpm lint, git diff --check, pnpm audit --prod, and execution-state validation all passed. No rendered UI changed; UI review was not required. No blocking implementation findings."
+      ],
+      "approved_at": "2026-08-02T05:54:30Z"
+    },
+    {
+      "id": "S-040",
+      "objective": "Preserve owner-selected Vikunja bucket changes while a live job, ask_user dialog, or terminal completion is in progress.",
+      "source_refs": [
+        "§5.2 Human overrides",
+        "§11.1 ask_user adapter",
+        "§11.2 Comment commands",
+        "§13 Reporting and failure handling",
+        "§14 Persistence and idempotency",
+        "§20 Integration tests",
+        "§23 acceptance criteria 8-11 and 15-17"
+      ],
+      "approval_evidence": [
+        "S-040-A1 PASS: monitor and durable ask_user paths now share job:<id>:manual-state-override, with a process-local idempotency lock and durable mutation intent; monitor-first and question-first races produce exactly one bounded comment and preserve the selected bucket in tests/manual-override-concurrency.test.ts.",
+        "S-040-A2 PASS: the durable ask_user bridge detects a Waiting-task bucket override, records MANUAL_STATE_OVERRIDE, does not move the task back, and uses the same shared report path; tests/interaction-ui.test.ts and tests/manual-override-concurrency.test.ts pass.",
+        "S-040-A3 PASS: completion re-reads the task immediately before the Review move and preserves a detected human override; tests/completion.test.ts passes.",
+        "Independent verification: pnpm vitest run tests/manual-override-concurrency.test.ts tests/control.test.ts tests/interaction-ui.test.ts tests/completion.test.ts (23 tests passed), pnpm test (26 files, 139 tests passed), pnpm typecheck, pnpm build, pnpm lint, and git diff --check all passed. Execution-state validation passed. No rendered UI changed; UI review was not required. No blocking implementation findings remain.",
+        "Independent re-review (2026-08-02T05:39Z): shared job-level lock plus durable mutation intent is used by both live monitor and ask_user override paths; monitor-first and question-first races each produced exactly one bounded MANUAL_STATE_OVERRIDE comment, preserved the selected Waiting bucket, and reached terminal MANUAL_STATE_OVERRIDE. Focused tests (23 passed), full tests (26 files/139 tests), coverage, typecheck, build, lint, diff check, production audit, and execution-state validation passed."
+      ],
+      "approved_at": "2026-08-02T05:39:30Z"
+    },
+    {
+      "id": "S-041",
+      "objective": "Persist the reason when an ask_user dialog is aborted so restart and shutdown diagnostics are durable.",
+      "source_refs": [
+        "§11.1 ask_user adapter",
+        "§14 Persistence and idempotency",
+        "§20 Integration tests",
+        "§23 acceptance criteria 10 and 17"
+      ],
+      "approval_evidence": [
+        "S-041-A1 PASS: abort handling stores the signal reason in Question.abortReason, preserves WAIT_INTERRUPTED, and the focused interaction test verifies both; SQLite persistence bounds reasons to 2,000 characters and the value survives reopen.",
+        "S-041-A2 PASS: startup reconciliation aborts unresolved questions with the stable reason `runner restarted while waiting for an answer`; reconciliation tests remain green and preserve manual bucket overrides.",
+        "S-041-A3 PASS: migration 4 additively adds questions.abort_reason after the existing v1-v3 schema; the v1 upgrade and bounded-reason persistence tests pass.",
+        "Independent verification: focused persistence/interaction tests (14 passed), pnpm test (25 files, 137 tests passed), pnpm typecheck, pnpm build, pnpm lint, git diff --check, and execution-state validation all passed. No rendered UI changed; UI review was not required. No blocking implementation findings."
+      ],
+      "approved_at": "2026-08-02T05:05:00Z"
+    },
+    {
+      "id": "S-036",
+      "objective": "Validate task identity and recover its Kanban bucket from expanded Vikunja responses after a daemon restart.",
+      "source_refs": [
+        "§16 Security requirements",
+        "§17 Module interfaces",
+        "§20 Integration tests",
+        "§23 acceptance criteria 2, 6, 17, and 21"
+      ],
+      "approval_evidence": [
+        "S-036-A1 PASS: after validateProjectLayout stores the configured numeric project/view layout, getTask resolves the matching expanded bucket when bucket_id is absent; tests/vikunja-http.test.ts covers the restart-shaped response and resolves bucket 3.",
+        "S-036-A2 PASS: getTask validates the parsed task ID against the requested branded TaskId and throws VikunjaResponseError on a mismatched successful response; tests/vikunja-http.test.ts covers the mismatch.",
+        "Independent verification: pnpm vitest run tests/vikunja-http.test.ts (11 passed); pnpm test (25 files, 131 tests passed); pnpm typecheck; pnpm build; pnpm lint; and git diff --check all passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and approved slices were preserved. No blocking implementation findings."
+      ],
+      "approved_at": "2026-08-02T04:32:00Z"
+    },
+    {
+      "id": "S-034",
+      "objective": "Safely reconcile a daemon restart during the local claiming window so interrupted claims cannot permanently consume the single active-job slot or overwrite a human bucket choice.",
+      "source_refs": [
+        "§6 Eligibility, ordering, and claiming",
+        "§14 Persistence and idempotency",
+        "§21 Operational behavior",
+        "§23 acceptance criteria 2, 15, 17, and 22"
+      ],
+      "acceptance_checks": [
+        {
+          "id": "S-034-A1",
+          "statement": "Startup reconciliation terminally resolves a durable claiming job and releases the local active slot instead of leaving it recoverable forever.",
+          "evidence": "tests/reconciliation.test.ts: interrupted claiming job ends failed and recoverableJobs() is empty."
+        },
+        {
+          "id": "S-034-A2",
+          "statement": "When the task is still in runner-owned Running, reconciliation moves it once to Failed; when it remains Ready or another bucket, reconciliation preserves the observed bucket.",
+          "evidence": "tests/reconciliation.test.ts covers Running compensation and Ready preservation; move calls are asserted."
+        },
+        {
+          "id": "S-034-A3",
+          "statement": "Claim-interruption reporting uses stable idempotency keys and bounded durable comments.",
+          "evidence": "tests/reconciliation.test.ts asserts the stable startup-claim-interrupted comment marker; existing replay mutation path remains idempotent."
+        }
+      ],
+      "approval_evidence": [
+        "S-034-A1 PASS: reconcileStartup transitions interrupted claiming jobs to terminal failed state, and recoverableJobs() no longer returns them; tests/reconciliation.test.ts asserts the released active slot.",
+        "S-034-A2 PASS: when a claiming job is observed in runner-owned Running, reconciliation moves it once to Failed; when observed Ready or another bucket, it performs no compensating move and preserves the remote bucket. tests/reconciliation.test.ts covers both Running and Ready cases.",
+        "S-034-A3 PASS: startup claim-interruption comments carry stable [pi-runner][idempotency:...] markers and are delivered through durable mutation intents; repeated reconciliation does not duplicate them.",
+        "Independent verification: pnpm vitest run tests/reconciliation.test.ts (11 passed); pnpm test:coverage (25 files, 126 tests passed; reconciliation 98.96% lines / 94.23% branches); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json all passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and approved slices were preserved. No blocking implementation findings."
+      ],
+      "approved_at": "2026-08-02T04:19:11Z"
+    },
+    {
+      "id": "S-033",
+      "objective": "Enforce the required coverage threshold and remediate production dependency vulnerabilities while preserving pinned pi-conductor contracts.",
+      "source_refs": [
+        "§3 Tech stack and source contracts",
+        "§16 Security requirements",
+        "§20 Testing strategy",
+        "§23 acceptance criterion 21"
+      ],
+      "approval_evidence": [
+        "S-033-A1 PASS: package.json uses the pinned @vitest/coverage-v8 3.2.4 provider and vitest.config.ts enforces 85% line and branch thresholds for src/domain/claiming.ts, src/domain/interaction.ts, and src/domain/reconciliation.ts. pnpm test:coverage passed 25 files and 124 tests; measured coverage was claiming 97.11% lines / 87.09% branches, interaction 94.44% / 95.00%, and reconciliation 99.57% / 95.83%.",
+        "S-033-A2 PASS: package.json upgrades the direct yaml parser to 2.8.3 and pins the transitive undici override at 8.5.0 without changing pi-conductor 0.12.0 or pi-conductor-analytics-plugin 0.2.0. pnpm audit --prod reported No known vulnerabilities found; pnpm why undici confirmed one resolved 8.5.0 version.",
+        "Independent verification: pnpm test (25 files, 124 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json all passed. Reviewed package.json, pnpm-lock.yaml, vitest.config.ts, tests/claiming.test.ts, and tests/reconciliation.test.ts against the active acceptance checks. No rendered UI changed; UI review was not required. No blocking findings.",
+        "Candidate-complete assessment: this slice is approved, but the execution state remains active because other requested slices remain in known_remaining."
+      ],
+      "approved_at": "2026-08-02T04:10:00Z"
+    },
+    {
+      "id": "S-031",
+      "objective": "Ensure every durable question and invalid-answer correction comment includes its stable machine marker and exact idempotency key.",
+      "source_refs": [
+        "§11.1 ask_user adapter",
+        "§11.3 Comment output policy",
+        "§14 Persistence and idempotency",
+        "§23 acceptance criteria 8-10 and 17"
+      ],
+      "approval_evidence": [
+        "S-031-A1 PASS: createVikunjaQuestionUi records the question comment and Waiting move as durable idempotency-keyed mutations before delivery; the posted question body contains the exact [pi-runner][idempotency:job:job-1:question:question-1:comment] key. tests/interaction-ui.test.ts passes.",
+        "S-031-A2 PASS: accepted replies and invalid-answer corrections retain durable idempotency-keyed mutations; correction bodies contain the exact stable correction key [pi-runner][idempotency:job:job-1:question:question-1:correction:2]. tests/interaction-ui.test.ts passes.",
+        "Independent verification: pnpm test (25 files, 112 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation passed. Reviewed all runner comment-output paths in src/vikunja/interaction-ui.ts, src/domain/orchestration.ts, src/domain/control.ts, src/domain/claiming.ts, and src/domain/reconciliation.ts; each constructs the required [pi-runner][idempotency:...] marker. No rendered UI changed; UI review was not required.",
+        "Prior S-031-F1 re-reviewed and resolved: question and invalid-answer correction bodies now include their exact comment mutation idempotency keys, with regression assertions."
+      ],
+      "approved_at": "2026-08-02T03:48:00Z"
+    },
+    {
+      "id": "S-029",
+      "objective": "Propagate daemon shutdown cancellation to the active conductor handle and polling delay so SIGTERM/SIGINT requests graceful abort without waiting for the next poll interval.",
+      "source_refs": [
+        "§10 Pi Conductor integration",
+        "§19 Commands",
+        "§21 Operational behavior",
+        "§23 acceptance criterion 22"
+      ],
+      "approval_evidence": [
+        "S-029-A1 PASS: executeClaimedJob and defaultResumeJobs attach the daemon AbortSignal to live conductor handles, call abort once with the stable reason `runner shutting down`, and retain terminal completion plus monitor cleanup; tests/runner-execution.test.ts and tests/run.test.ts cover new and recovered runs.",
+        "S-029-A2 PASS: runPollCycle forwards the daemon signal, sleepWithShutdown clears its production timer on abort, and runDaemon exits the polling delay promptly; tests/run.test.ts covers default timer cancellation, delay interruption, signal forwarding, and recovered-run abort.",
+        "Independent verification: focused shutdown/cycle tests (9 passed); pnpm test (25 files, 111 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and controlling artifacts were preserved."
+      ],
+      "approved_at": "2026-08-02T03:27:00Z"
+    },
+    {
+      "id": "S-027",
+      "objective": "Package the daemon for native systemd supervision as an unprivileged single replica with documented protected-credential installation and data-directory confinement.",
+      "source_refs": [
+        "§21 Operational behavior",
+        "§23 acceptance criterion 22",
+        "§16 Security requirements"
+      ],
+      "approval_evidence": [
+        "S-027-A1 PASS: the committed unit runs the daemon as pi-conductor-runner, uses the compiled run entrypoint, restarts on failure, and sends SIGTERM on stop; tests/systemd.test.ts passes.",
+        "S-027-A2 PASS: the unit applies NoNewPrivileges, PrivateDevices, ProtectSystem=strict, ReadOnlyPaths for code/config, ReadWritePaths for the configured default data directory, and restricted address families; focused packaging test passes.",
+        "S-027-A3 PASS: deploy/README.md documents unprivileged installation, 0600 protected credential installation outside the repository, systemd setup, health, and journald operations; git diff --check passes.",
+        "Independent verification: pnpm vitest run tests/systemd.test.ts (1 test passed); pnpm test (25 files, 105 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; execution-state validation passed. systemd-analyze syntax verification was attempted but the environment lacks /usr/bin/node; a temporary executable was used for unit syntax checking.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and controlling artifacts were preserved."
+      ],
+      "approved_at": "2026-08-02T02:56:00Z"
+    },
+    {
+      "id": "S-024",
+      "objective": "Persist a daemon heartbeat and expose a read-only runner:health check that validates configured Vikunja layouts and rejects missing or stale heartbeats without starting work.",
+      "source_refs": [
+        "§19 Commands",
+        "§21 Operational behavior",
+        "§23 acceptance criteria 21-22"
+      ],
+      "approval_evidence": [
+        "S-024-A1 PASS: SqliteJobStore stores the singleton heartbeat in migration 3 and the persistence/reopen test confirms it survives reopening.",
+        "S-024-A2 PASS: checkRunnerHealth validates every configured project layout, then rejects missing, malformed, or stale heartbeat state without polling or claiming; tests/health.test.ts covers fresh, missing, and stale cases.",
+        "S-024-A3 PASS: runHealth strictly loads configuration, reads the protected Vikunja token, opens and closes SQLite in finally, and only invokes layout/heartbeat health checks; runPollCycle refreshes the same store heartbeat before polling.",
+        "Independent verification: focused health/persistence/CLI tests (14 passed); pnpm test (22 files, 99 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and approved slices were preserved."
+      ],
+      "approved_at": "2026-08-02T02:31:06Z"
+    },
+    {
+      "id": "S-023",
+      "objective": "Run one complete poll cycle: after a successful Ready claim, re-read the task and validate its project layout, then execute the claimed job through terminal reporting while preserving the no-claim no-execution behavior.",
+      "source_refs": [
+        "§6 Eligibility, ordering, and claiming",
+        "§8-§13 Repository, conductor, interaction, verification, telemetry workflow",
+        "§19 Commands",
+        "§23 acceptance criteria 2, 6-8 and 12-17"
+      ],
+      "approval_evidence": [
+        "S-023-A1 PASS: runPollCycle executes at most one claimed task and returns without invoking the execution adapter for empty, skipped, conflicted, or failed claims; tests/runner-cycle.test.ts and the polling tests cover the no-claim boundary.",
+        "S-023-A2 PASS: after a claimed result, runPollCycle re-reads the task and revalidates the project layout selected by numeric project ID before invoking execution; tests/runner-cycle.test.ts verifies both calls and the exact task/project/layout inputs.",
+        "S-023-A3 PASS: runPollCycle awaits the injected or default terminal execution path and forwards the durable store, gateway, repository, conductor, UI, and configured comment limit without reconstructing task-controlled paths.",
+        "Independent verification: pnpm vitest run tests/runner-cycle.test.ts (2 tests passed); pnpm typecheck; pnpm test (21 files, 96 tests passed); pnpm build; pnpm lint; git diff --check; and execution-state validation passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and approved slices were preserved."
+      ],
+      "approved_at": "2026-08-02T02:23:36Z"
+    },
+    {
+      "id": "S-022",
+      "objective": "Execute one claimed task through conductor start, deterministic verification, optional publishing, and idempotent terminal reporting using the exact prepared worktree.",
+      "source_refs": [
+        "§8 Repository and worktree contract",
+        "§10 Pi Conductor integration",
+        "§12 Verification and publishing",
+        "§13 Reporting and failure handling",
+        "§14 Persistence and idempotency",
+        "§23 acceptance criteria 7 and 12-17"
+      ],
+      "approval_evidence": [
+        "S-022-A1 PASS: startClaimedJob prepares the repository, builds the bounded goal, starts through ConductorGateway, validates a non-empty run ID, records it, and reloads the job before executeClaimedJob awaits completion; tests/runner-execution.test.ts and tests/orchestration.test.ts verify ordering and persistence.",
+        "S-022-A2 PASS: executeClaimedJob carries the exact PreparedWorktree into completeConductorJob; successful done completion captures response/stats, verifies configured commands and a clean worktree, publishes through the configured RepositoryManager mode, posts one idempotent Review report, moves only to Review, and never issues a Done move.",
+        "S-022-A3 PASS: session, verification, publish, and terminal-report failures use stable completion error codes, preserve durable job/worktree/run artifacts, and record idempotency-keyed move/comment intents for startup replay; completion/orchestration tests cover failure and idempotency paths.",
+        "Independent verification: pnpm vitest run tests/runner-execution.test.ts tests/orchestration.test.ts (9 tests passed); pnpm test (20 files, 94 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and approved slices were preserved."
+      ],
+      "approved_at": "2026-08-02T02:13:30Z"
+    },
+    {
+      "id": "S-020",
+      "objective": "Bridge the daemon-wide pi-conductor record emitter to the analytics reporter with startup backfill and best-effort shutdown delivery.",
+      "source_refs": [
+        "§13 Telemetry contract",
+        "§18 Project structure",
+        "§20 Integration tests",
+        "§23 acceptance criteria 18-19"
+      ],
+      "approval_evidence": [
+        "S-020-A1 PASS: AnalyticsBridge awaits reporter.backfill before subscribing to pi-conductor records and passes each PersistedRecord unchanged to reporter.enqueue; tests/analytics.test.ts verifies ordering and object identity.",
+        "S-020-A2 PASS: backfill, synchronous enqueue, subscription, and shutdown failures are caught and logged without rejecting bridge start/shutdown; tests/analytics.test.ts covers these failure paths.",
+        "S-020-A3 PASS: start/shutdown are idempotent, unsubscribe and reporter shutdown run once, and the default reporter wires queue-overflow diagnostics plus configured data/runs/config/source options.",
+        "Independent verification: pnpm vitest run tests/analytics.test.ts (3 tests passed); pnpm test (18 files, 88 tests passed); pnpm typecheck; pnpm build; pnpm lint; and git diff --check passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes were preserved."
+      ],
+      "approved_at": "2026-08-02T02:00:55Z"
+    },
+    {
+      "id": "S-019",
+      "objective": "Finalize a completed conductor job through verification, optional configured branch publishing, Review transition, and one idempotent final report while failing safely on session, verification, or publish errors.",
+      "source_refs": [
+        "§12 Verification and publishing",
+        "§13 Reporting and failure handling",
+        "§14 Persistence and idempotency",
+        "§23 acceptance criteria 12-15"
+      ],
+      "approval_evidence": [
+        "S-019-A1 PASS: completeConductorJob awaits done completion, captures final response/stats, runs all configured verification commands, requires a clean worktree, publishes in configured local or push_branch mode, and moves only to Review; no Done transition is issued.",
+        "S-019-A2 PASS: session, verification, publishing, and terminal-report failures transition the running job to Failed with stable CONDUCTOR_SESSION_FAILED, VERIFY_FAILED, or PUBLISH_FAILED codes while retaining branch/worktree/conductor artifacts and durable pending mutation intents.",
+        "S-019-A3 PASS: Review and failure bucket moves plus terminal comments are routed through durable idempotency-keyed mutation intents; the review report includes branch, latest commit, attempt, conductor run, verification results, publish result, and bounded final response without raw exception details.",
+        "Independent verification: pnpm vitest run tests/completion.test.ts tests/repositories-git.test.ts (16 tests passed); pnpm test (17 files, 85 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and approved slices were preserved."
+      ],
+      "approved_at": "2026-08-02T01:52:23Z"
+    },
+    {
+      "id": "S-010",
+      "objective": "Validate owner replies to durable Vikunja input, confirmation, and selection questions before resolving the live conductor dialog.",
+      "source_refs": [
+        "§11.1 ask_user adapter",
+        "§11.2 Comment commands",
+        "§20 unit tests",
+        "§23 acceptance criteria 8-9"
+      ],
+      "approval_evidence": [
+        "S-010-A1 PASS: validateQuestionResponse accepts only owner-authored non-empty input, trims surrounding whitespace, and rejects runner/other-user or empty replies.",
+        "S-010-A2 PASS: confirmation replies are case-insensitively normalized from yes/y or no/n to yes/no; invalid replies remain rejected.",
+        "S-010-A3 PASS: selection replies accept configured option text or one-based numeric selection and return the configured option text; invalid replies remain rejected.",
+        "Independent verification: pnpm vitest run tests/interaction.test.ts (5 tests passed); pnpm test (9 files, 49 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation all passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing changes and approved slices were preserved."
+      ],
+      "approved_at": "2026-08-02T00:40:00Z"
+    },
+    {
+      "id": "S-006",
+      "objective": "Reconcile durable remote mutations and recoverable jobs on startup without overwriting human bucket overrides.",
+      "source_refs": [
+        "§11.1 ask_user adapter",
+        "§11.3 Comment output policy",
+        "§14 Persistence and idempotency",
+        "§17 JobStore interface",
+        "§23 acceptance criteria 10 and 17"
+      ],
+      "approval_evidence": [
+        "S-006-A1 PASS: restart during an unresolved Waiting question aborts the question, fails the job with WAIT_INTERRUPTED, moves the task to Failed, posts one actionable idempotency-marked comment, and does not repeat the mutation on reconciliation.",
+        "S-006-A2 PASS: manually selected remote buckets are preserved; the job fails with MANUAL_STATE_OVERRIDE and receives one explanatory idempotency-marked comment without a compensating move or duplicate repost.",
+        "S-006-A3 PASS: startup replay hydrates the real VikunjaHttpGateway task location before move_task and assign_runner intents, deduplicates already-delivered comments by stable body/idempotency marker, and leaves transport-failed intents pending for later startup.",
+        "Independent verification: pnpm vitest run tests/reconciliation.test.ts (6 tests passed); pnpm test (7 files, 36 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; execution-state validation passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing work and S-007 files were preserved.",
+        "Independent re-review of the S-006-A3 remediation: PASS. src/domain/reconciliation.ts hydrates VikunjaHttpGateway task location with getTask before replaying move_task and assign_runner intents; tests/reconciliation.test.ts covers fresh HTTP-adapter replay. Verification rerun: focused reconciliation tests (6 passed), full suite (7 files/36 tests), typecheck, build, lint, git diff --check, and execution-state validation all passed."
+      ],
+      "approved_at": "2026-08-02T00:08:00Z"
+    },
+    {
+      "id": "S-001",
+      "objective": "Establish a strict TypeScript configuration contract and validate the required Vikunja workflow layout.",
+      "source_refs": [
+        "§2 assumptions 4-6",
+        "§5.1 Bucket authority",
+        "§7 Configuration contract",
+        "§17 Module interfaces",
+        "§23 acceptance criteria 1 and 3"
+      ],
+      "approval_evidence": [
+        "S-001-A1 PASS: strict configuration parsing, numeric project IDs, unknown-field rejection, version-1 concurrency, and private-network HTTP validation are implemented; allow_insecure_http type validation and regression tests resolve the prior finding.",
+        "S-001-A2 PASS: validateProjectLayout enforces the seven required bucket names exactly once and requires Backlog as default and Done as done bucket.",
+        "pnpm test: 2 files and 12 tests passed.",
+        "pnpm typecheck and pnpm build passed.",
+        "pnpm lint passed.",
+        "python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json passed."
+      ],
+      "approved_at": "2026-08-01T22:24:55Z"
+    },
+    {
+      "id": "S-002",
+      "objective": "Select eligible configured Vikunja tasks deterministically from the Ready bucket while excluding done, active, and unavailable work.",
+      "source_refs": [
+        "§5.1 Bucket authority",
+        "§6 Eligibility, ordering, and claiming",
+        "§23 acceptance criteria 3-4"
+      ],
+      "approval_evidence": [
+        "S-002-A1 PASS: selectEligibleTasks requires a configured project layout, the configured Ready bucket, not-done status, and no active local task ID; exclusion test passes.",
+        "S-002-A2 PASS: eligible tasks sort by priority descending, position ascending, and numeric task ID ascending, then are limited by availableSlots; ordering and concurrency tests pass.",
+        "pnpm test: 3 files and 15 tests passed.",
+        "pnpm typecheck, pnpm build, pnpm lint, and git diff --check passed.",
+        "Independent review: S-002-A1 and S-002-A2 pass against §§5.1, 6, and 23; the primary checkout contains only the intended eligibility implementation/tests plus protected pre-existing changes.",
+        "python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json passed."
+      ],
+      "approved_at": "2026-08-01T22:30:30Z"
+    },
+    {
+      "id": "S-003",
+      "objective": "Implement the validated paginated Vikunja HTTP gateway for project layouts, Ready-task reads, task mutations, and comments.",
+      "source_refs": [
+        "§6 Eligibility, ordering, and claiming",
+        "§7 Configuration contract",
+        "§17 Module interfaces",
+        "§20 integration tests",
+        "§23 acceptance criteria 1-4"
+      ],
+      "approval_evidence": [
+        "S-003-A1 PASS: manual Kanban and bucket ownership/layout validation use configured numeric project/view IDs; repository selection remains keyed by numeric project ID.",
+        "S-003-A2 PASS: view task reads consume x-pagination-total-pages, validate every task, and filter to the configured Ready bucket.",
+        "S-003-A3 PASS: task moves, runner assignment, comments, and comment watermarks use typed native fetch calls with validated responses and no token-bearing errors.",
+        "pnpm test: 4 files and 21 tests passed.",
+        "pnpm typecheck, pnpm build, pnpm lint, and git diff --check passed.",
+        "Independent formal review retry: S-003-A1, S-003-A2, and S-003-A3 pass against the controlling specification; no blocking findings.",
+        "Fresh verification at 2026-08-01T23:02Z: pnpm test, pnpm typecheck, pnpm build, pnpm lint, and git diff --check passed.",
+        "python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json passed."
+      ],
+      "approved_at": "2026-08-01T23:00:00Z"
+    },
+    {
+      "id": "S-004",
+      "objective": "Persist task claims and job lifecycle mappings in SQLite with transactional schema migrations and version-1 concurrency invariants.",
+      "source_refs": [
+        "§6 Eligibility, ordering, and claiming",
+        "§14 Persistence and idempotency",
+        "§17 JobStore interface",
+        "§23 acceptance criteria 5-6 and the active-job portion of 17"
+      ],
+      "approval_evidence": [
+        "S-004-A1 PASS: SqliteJobStore enables WAL, applies the versioned jobs migration transactionally, and enforces unique active-task and one-global-active-job partial indexes.",
+        "S-004-A2 PASS: tryClaim commits a local transaction before returning, has no network coupling, returns null for duplicate active claims, and increments attempts after terminal failure; concurrent same-database claims also yield one winner.",
+        "S-004-A3 PASS: job, branch/worktree, conductor run ID, and lifecycle state persist across reopen; illegal transitions are rejected and terminal error codes are validated.",
+        "pnpm test: 5 files and 24 tests passed.",
+        "pnpm typecheck, pnpm build, pnpm lint, and git diff --check passed.",
+        "Independent general review retry: S-004-A1, S-004-A2, and S-004-A3 pass against the controlling specification; no blocking findings.",
+        "Fresh verification at 2026-08-01T23:11:58Z: pnpm test (5 files, 24 tests), pnpm typecheck, pnpm build, pnpm lint, and git diff --check passed.",
+        "python3 /home/lynellf/.pi/roles/validate-execution-state.py docs/execution-state.json passed."
+      ],
+      "approved_at": "2026-08-01T23:12:00Z"
+    },
+    {
+      "id": "S-005",
+      "objective": "Add durable question interactions, comment watermarks, milestone delivery records, and remote-mutation intents to the SQLite job store with idempotent restart-safe persistence.",
+      "source_refs": [
+        "§11.1 ask_user adapter",
+        "§11.3 Comment output policy",
+        "§14 Persistence and idempotency",
+        "§17 JobStore interface",
+        "§23 acceptance criteria 9, 10, and 17"
+      ],
+      "approval_evidence": [
+        "S-005-A1 PASS: SqliteJobStore applies ordered v1/v2 migrations in one BEGIN IMMEDIATE transaction; the v1 upgrade test preserves a recoverable job and creates the v2 tables.",
+        "S-005-A2 PASS: questions persist kind, prompt, options, watermark, posted comment, response, answer, and state; the partial unique index allows only one pending question per job and the persistence test covers resolution.",
+        "S-005-A3 PASS: comment watermarks update only when the incoming ID is greater; unique idempotency keys deduplicate milestones and remote mutation intents, preserve completion remote IDs, and survive reopen.",
+        "Independent verification: pnpm test (5 files, 27 tests), pnpm typecheck, pnpm build, pnpm lint, git diff --check, and execution-state validation all passed.",
+        "No blocking implementation findings; rendered UI did not change, so no UI review was required.",
+        "Independent general review: S-005-A1, S-005-A2, and S-005-A3 pass against §§11.1, 11.3, 14, 17, and 23; no blocking implementation findings."
+      ],
+      "approved_at": "2026-08-01T23:27:28Z"
+    },
+    {
+      "id": "S-007",
+      "objective": "Prepare a persistent Git clone per configured project and one confined, deterministic task worktree per Vikunja task with retry reuse, using argument-array Git invocations.",
+      "source_refs": [
+        "§8 Repository and worktree contract",
+        "§16 Security requirements",
+        "§17 Module interfaces",
+        "§20 Testing strategy",
+        "§23 acceptance criterion 5"
+      ],
+      "approval_evidence": [
+        "S-007-A1 PASS: GitRepositoryManager.prepare clones a missing repository into <data_dir>/repositories/<project_id>/repo and otherwise runs `git fetch --prune origin` after a `rev-parse --git-dir` check; the integration test reads the cloned README.md through the resulting worktree.",
+        "S-007-A2 PASS: a first attempt creates the deterministic task branch `pi/vikunja-<task_id>-<slug>` from `origin/<project.defaultBranch>`; the integration test asserts the branch name (`pi/vikunja-12-fix-api-auth-injection`) and that the worktree is on that branch.",
+        "S-007-A3 PASS: every job/worktree path is checked both lexically (resolve) and via realpath; a symlink at <data_dir>/jobs/12 pointing outside the data directory is rejected with `job directory escapes configured data directory`.",
+        "S-007-A4 PASS: a retry that supplies the persisted worktree and branch returns the same `PreparedWorktree` without recreating the worktree or replacing files (the integration test writes a `local.txt` to the first worktree and confirms it survives the retry with a different task title).",
+        "S-007-A5 PASS: all Git invocations use `execFile` with argument arrays and explicit `cwd`; no shell interpolation occurs and only non-destructive operations are issued (`clone`, `rev-parse`, `fetch --prune`, `worktree add`); `validateBranch` enforces the `^pi/vikunja-[0-9]+-[a-z0-9-]+$` shape so persisted names cannot smuggle path separators or Git metacharacters.",
+        "Independent verification: pnpm vitest run tests/repositories-git.test.ts (3 tests passed); pnpm test (8 files, 39 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation all passed.",
+        "No rendered UI changed; UI review was not required. The S-001 boolean-validation remediation, the approved S-002-S-008 worktrees, and other protected pre-existing changes were preserved; the S-007 slice only added src/repositories/git.ts and tests/repositories-git.test.ts and exposed them through src/index.ts.",
+        "Independent general review: S-007-A1 through S-007-A5 pass against §8, 16, 17, 20, and 23 acceptance criterion 5; no blocking implementation findings. RepositoryManager.verify and RepositoryManager.publish remain out of scope for this bounded slice and are expected to be covered by a future slice."
+      ],
+      "approved_at": "2026-08-02T00:25:00Z"
+    },
+    {
+      "id": "S-008",
+      "objective": "Construct a deterministic, bounded conductor goal from trusted project configuration and untrusted Vikunja task content.",
+      "source_refs": [
+        "§9 Prompt construction",
+        "§10 Pi Conductor integration",
+        "§23 acceptance criteria 7 and 20"
+      ],
+      "approval_evidence": [
+        "S-008-A1 PASS: buildConductorGoal includes the numeric human task reference, task title/description, repository name, task branch, default branch, and configured conductor manifest; tests/prompt.test.ts covers the rendered fields.",
+        "S-008-A2 PASS: comments are filtered to the owner by default, sorted chronologically with ID tie-breaking, and runner comments are included only when explicitly requested for retry context; tests/prompt.test.ts covers filtering, ordering, and retry inclusion.",
+        "S-008-A3 PASS: task/comment input is bounded with an explicit truncation marker, and the goal requires ask_user, configured checks, worktree-only changes, and prohibits merge/deploy/force-push, runner configuration changes, and secret access; tests/prompt.test.ts covers truncation and safety instructions.",
+        "Independent verification: pnpm vitest run tests/prompt.test.ts (3 tests passed); pnpm test (8 files, 39 tests passed); pnpm typecheck; pnpm build; pnpm lint; git diff --check; and execution-state validation passed.",
+        "No rendered UI changed; UI review was not required. Protected pre-existing work and approved slices were preserved."
+      ],
+      "approved_at": "2026-08-02T00:16:30Z"
+    }
+  ],
   "known_remaining": [
     {
-      "source_ref": "§17 VikunjaGateway and §23 acceptance criteria 2-4",
-      "summary": "Implement validated, paginated Vikunja HTTP adapter and deterministic task eligibility/order/claiming."
+      "source_ref": "§20 end-to-end smoke test and §23 acceptance criteria 2, 7-8, 14, 18 and 22",
+      "summary": "Run the opt-in production smoke demonstration against a disposable Vikunja project, local bare Git remote, pinned pi-conductor deterministic provider, mock analytics endpoint, and the installed systemd unit. Automated local contract tests cover the composed workflow but do not mutate a live Vikunja deployment."
     },
     {
-      "source_ref": "§14 Persistence and §23 acceptance criteria 5-6, 17",
-      "summary": "Implement SQLite migrations, job claims, idempotent milestones, and restart reconciliation."
+      "source_ref": "§24 open decisions before production deployment",
+      "summary": "The owner must confirm publishing defaults, model authentication location, per-repository verification commands, Git author identity/commit policy, and the private-network HTTP exception before enabling live projects."
     },
     {
-      "source_ref": "§8-§13 and §23 acceptance criteria 7-22",
-      "summary": "Implement repository, conductor/UI bridge, verification/publishing, telemetry, CLI, and operational adapters incrementally."
+      "source_ref": "§23 acceptance criterion 21 and §25 handoff instruction",
+      "summary": "Perform an independent final code/security review, reconcile approval evidence, and commit the currently dirty implementation as reviewable atomic changes before release."
     }
   ],
   "worktree": {
@@ -77,13 +531,120 @@
       {
         "path": "docs/pi-conductor-vikunja-runner-spec.md",
         "note": "Controlling specification supplied before this visit; preserve."
+      },
+      {
+        "path": "src/config/config.ts",
+        "note": "Approved S-001 remediation already present before this slice; preserve."
+      },
+      {
+        "path": "tests/config.test.ts",
+        "note": "Approved S-001 remediation tests already present before this slice; preserve."
+      },
+      {
+        "path": "src/domain/eligibility.ts",
+        "note": "Approved S-002 implementation already present before this slice; preserve."
+      },
+      {
+        "path": "tests/domain-eligibility.test.ts",
+        "note": "Approved S-002 tests already present before this slice; preserve."
+      },
+      {
+        "path": "src/vikunja/",
+        "note": "Approved S-003 gateway and validation implementation; preserve."
+      },
+      {
+        "path": "tests/vikunja-http.test.ts",
+        "note": "Approved S-003 gateway tests; preserve."
+      },
+      {
+        "path": "src/persistence/sqlite.ts",
+        "note": "Approved S-004 job persistence is extended additively in S-005; preserve prior job behavior."
+      },
+      {
+        "path": "tests/persistence-sqlite.test.ts",
+        "note": "Approved S-004 persistence tests are extended with S-005 coverage; preserve prior tests."
+      },
+      {
+        "path": "src/domain/jobs.ts",
+        "note": "Approved S-004/S-005 persistence; additively extended with S-006 pending reconciliation queries."
+      },
+      {
+        "path": "src/index.ts",
+        "note": "Existing public exports; additively exports S-006 reconciliation, S-007 repository, S-011 conductor, and S-015 control modules."
+      },
+      {
+        "path": "src/repositories/git.ts",
+        "note": "S-007 clone/worktree preparation plus active S-009 verification/publishing and S-019 latest-commit verification metadata; preserve all additive changes."
+      },
+      {
+        "path": "tests/repositories-git.test.ts",
+        "note": "S-007 Git-origin/path-confinement tests plus active S-009 verification and publishing tests; preserve all additive changes."
+      },
+      {
+        "path": "src/domain/reconciliation.ts",
+        "note": "S-006 reconciliation implementation; this remediation adds task-location hydration before route-dependent mutation replay."
+      },
+      {
+        "path": "tests/reconciliation.test.ts",
+        "note": "S-006 reconciliation tests; this remediation adds real Vikunja HTTP adapter startup-replay coverage."
+      },
+      {
+        "path": "src/domain/polling.ts",
+        "note": "S-016 polling cycle implementation from the interrupted visit; preserve."
+      },
+      {
+        "path": "tests/polling.test.ts",
+        "note": "S-016 polling cycle tests from the interrupted visit; preserve."
+      },
+      {
+        "path": "src/domain/orchestration.ts",
+        "note": "S-018 resume plus active S-019 completion/finalization implementation; preserve both slices."
+      },
+      {
+        "path": "tests/orchestration.test.ts",
+        "note": "S-018 orchestration tests; preserve."
+      },
+      {
+        "path": "tests/completion.test.ts",
+        "note": "Active S-019 conductor completion/finalization tests; preserve."
       }
     ],
     "protected_paths": [
       ".pi-conductor/",
       "docs/pi-conductor-vikunja-runner-spec.md"
-    ]
+    ],
+    "changes_made_this_visit": [
+      "S-035: added bounded transient-read retries with injectable exponential backoff/jitter to the Vikunja HTTP adapter; mutations remain single-attempt.",
+      "S-035 tests: added GET retry timing/success coverage and non-retry mutation coverage.",
+      "S-037: added an idempotent CLAIM_CONFLICT failure milestone after post-claim remote-read conflicts without compensating the observed human bucket.",
+      "S-037 tests: added conflict reporting and duplicate-delivery coverage.",
+      "S-038: made the default Vikunja question polling delay cancellation-aware and forwarded AbortSignal to injected sleeps.",
+      "S-038 tests: added default polling timer cancellation regression coverage.",
+      "S-040: live command monitoring now detects manual bucket overrides for Running/Waiting jobs, aborts the conductor, records MANUAL_STATE_OVERRIDE, and emits one idempotent bounded comment.",
+      "S-040: durable ask_user polling detects Waiting bucket overrides without moving the owner-selected bucket; completion preserves the terminal override.",
+      "S-041: ask_user aborts now persist a bounded cancellation reason, including signal cancellation and restart interruption.",
+      "Evidence recovery: restored S-040 as the active ready-for-review slice with explicit criteria, source references, changed files, and focused acceptance-test results.",
+      "S-040 remediation: unified live monitor and ask_user manual-override reporting under one job-level idempotency key and serialized concurrent delivery; added deterministic monitor-first/question-first regression coverage.",
+      "S-040 remediation hardening: centralized the override key/comment and made terminal transition handling tolerate a competing SQLite compare-and-swap winner; regression now injects that transition race while retaining exactly one report.",
+      "Resume verification: the immediately prior incomplete session made no additional source changes; this visit re-ran focused tests, full tests, coverage, typecheck, build, lint, diff check, and execution-state validation successfully.",
+      "S-042: added read-only validation for Git option injection, safe default branch refs, and confined conductor manifest paths, with focused regression tests.",
+      "S-042 follow-up: added regression coverage for absolute manifests, reserved HEAD refs, and push remotes beginning with a Git option; tightened branch component checks to match Git ref safety rules.",
+      "S-043: preserved recoverable jobs when startup cannot read their remote task, with regression coverage proving no bucket mutation or failure report occurs without observed remote state.",
+      "S-043 resume verification: this visit reran the focused reconciliation suite, full test suite, typecheck, build, lint, diff check, and execution-state validation successfully; no additional source mutation was needed.",
+      "S-044: waiting ask_user dialogs now skip /pi control comments so the live command monitor handles them; added regression coverage for abort command text followed by a valid answer.",
+      "S-037 resume: added bounded conflict-report regression coverage proving CLAIM_CONFLICT remains visible with the stable idempotency marker and duplicate delivery stays suppressed.",
+      "S-037 verification: reran full test suite (26 files, 145 tests), typecheck, build, lint, git diff --check, and execution-state validation; all passed. Fixed execution-state.json formatting to satisfy Biome lint. S-037 remains ready for review.",
+      "S-045: applied the existing trusted project validator to once, daemon, health, and validate operational entrypoints; added regressions proving unsafe Git values are rejected before credentials or runtime setup.",
+      "S-045 follow-up: runValidate and runHealth now validate trusted project values before reading credentials; all operational paths share one deterministic validator.",
+      "S-046: conductor gateway now resolves existing manifest paths through realpath and rejects symlink targets outside the prepared task worktree; added a regression for an external manifest symlink.",
+      "Completion hardening: start and resume failures now produce guarded durable Failed moves and actionable comments; dialog cancellation leaves terminal reporting to completion, and every stranded Waiting job fails safely on restart.",
+      "Validation completion: runner:validate now checks analytics configuration, shallow-cloned repository/default branches, conductor manifests, confined role prompts, and model registrations without mutating configured remotes.",
+      "Telemetry compatibility: added real mock-HTTP delivery and outage/restart backfill coverage for lifecycle, transition, checkpoint, and file_mutation records.",
+      "Operational completion: added structured redacting JSON logging, a bounded 25-second shutdown drain, analytics lifecycle for runner:once, deterministic branch reporting, enforced job-domain coverage, and operations/task-authoring documentation.",
+      "Composed workflow evidence: an SQLite-backed live ask_user integration returns the owner reply to the same conductor completion promise and reaches Review exactly once."
+    ],
+    "current_protection_notes": "Preserved all inherited dirty paths, approved slices, controlling artifacts, and host-generated .pi-conductor data. This visit changed only runner source, tests, documentation, coverage configuration, and execution-state tracking required to close the remaining version-one gaps."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-01T22:15:00Z"
+  "updated_at": "2026-08-02T07:48:00.000000Z"
 }
