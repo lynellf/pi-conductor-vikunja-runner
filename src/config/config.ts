@@ -90,6 +90,13 @@ const integer = (value: unknown, path: string, minimum = 0): number => {
   return value;
 };
 
+const boolean = (value: unknown, path: string): boolean => {
+  if (typeof value !== "boolean") {
+    throw new ConfigError(`${path} must be a boolean`);
+  }
+  return value;
+};
+
 const absolutePath = (value: unknown, path: string): string => {
   const result = string(value, path);
   if (!result.startsWith("/")) {
@@ -262,7 +269,10 @@ export function parseConfig(input: unknown): RunnerConfig {
     throw new ConfigError(
       "runner.global_concurrency must equal 1 in version 1",
     );
-  const allowInsecureHttp = vikunja.allow_insecure_http === true;
+  const allowInsecureHttp = boolean(
+    vikunja.allow_insecure_http,
+    "vikunja.allow_insecure_http",
+  );
   const projectsValue = object(source.projects, "projects");
   const projectEntries = Object.entries(projectsValue);
   if (projectEntries.length === 0)

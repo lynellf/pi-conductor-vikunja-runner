@@ -55,6 +55,23 @@ describe("parseConfig", () => {
     );
   });
 
+  it("rejects a non-boolean HTTP setting even for HTTPS", () => {
+    const input = validConfig();
+    input.vikunja.base_url = "https://vikunja.example.com";
+    input.vikunja.allow_insecure_http = "false" as unknown as boolean;
+    expect(() => parseConfig(input)).toThrow(
+      "vikunja.allow_insecure_http must be a boolean",
+    );
+  });
+
+  it("rejects a missing HTTP setting", () => {
+    const input = validConfig();
+    input.vikunja.allow_insecure_http = undefined as unknown as boolean;
+    expect(() => parseConfig(input)).toThrow(
+      "vikunja.allow_insecure_http must be a boolean",
+    );
+  });
+
   it("rejects unknown fields instead of silently ignoring misspellings", () => {
     const input = validConfig() as ReturnType<typeof validConfig> & {
       typo?: string;

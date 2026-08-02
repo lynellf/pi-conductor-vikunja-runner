@@ -1,0 +1,32 @@
+[Unit]
+Description=Pi Conductor Vikunja Runner
+Documentation=https://github.com/lynellf/pi-conductor-vikunja-runner
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pi-conductor-runner
+Group=pi-conductor-runner
+WorkingDirectory=/opt/pi-conductor-vikunja-runner
+ExecStart=/usr/bin/node /opt/pi-conductor-vikunja-runner/dist/src/cli/main.js run --config /etc/pi-conductor-vikunja-runner/config.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/pi-conductor-vikunja-runner /etc/pi-conductor-vikunja-runner
+ReadWritePaths=/var/lib/pi-conductor-vikunja-runner
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+LockPersonality=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
