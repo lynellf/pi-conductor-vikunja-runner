@@ -158,6 +158,68 @@ describe("reconcileStartup", () => {
     });
   });
 
+  it("suppresses stale claim assignment and claimed-comment intents for a failed job", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, {
+      state: "failed",
+      terminalErrorCode: "VIKUNJA_UNAVAILABLE",
+    });
+    const assignKey = `job:${claimed.id}:claim:assign`;
+    const commentKey = `job:${claimed.id}:claim:comment`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "assign_runner",
+      idempotencyKey: assignKey,
+      request: {},
+    });
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "post_comment",
+      idempotencyKey: commentKey,
+      request: { body: "Claimed task" },
+    });
+    let assignments = 0;
+    const comments: string[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(6),
+      moveTask: async () => undefined,
+      assignRunner: async () => {
+        assignments += 1;
+      },
+      listComments: async () => [],
+      postComment: async (_taskId, body) => {
+        comments.push(body);
+        return commentId(100);
+      },
+    };
+
+    const report = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(report).toMatchObject({
+      mutationsReplayed: 0,
+      mutationFailures: 2,
+    });
+    expect(assignments).toBe(0);
+    expect(comments).toEqual([]);
+    expect(await store.getMutationIntent(assignKey)).toMatchObject({
+      state: "failed",
+    });
+    expect(await store.getMutationIntent(commentKey)).toMatchObject({
+      state: "failed",
+    });
+  });
+
   it("replays a guarded recovery when startup later confirms Running", async () => {
     const store = await openStore();
     const ready = task(2);
@@ -268,6 +330,68 @@ describe("reconcileStartup", () => {
     expect(question.state).toBe("pending");
   });
 
+  it("fails an interrupted accepted answer without treating its Running move as manual", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    await store.transition(claimed.id, { state: "waiting" });
+    const question = await store.createQuestion({
+      jobId: claimed.id,
+      taskId: taskId(20),
+      kind: "input",
+      prompt: "Which approach?",
+      commentWatermark: null,
+    });
+    const answerMoveKey = `job:${claimed.id}:question:${question.id}:running`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "move_task",
+      idempotencyKey: answerMoveKey,
+      request: { bucketId: 3, expectedBucketId: 4 },
+    });
+    await store.completeMutation(answerMoveKey, null);
+    let remote = task(3);
+    const moves: number[] = [];
+    const comments: string[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => remote,
+      moveTask: async (_taskId, bucket) => {
+        moves.push(bucket);
+        remote = { ...remote, bucketId: bucket };
+      },
+      listComments: async () => [],
+      postComment: async (_taskId, body) => {
+        comments.push(body);
+        return commentId(250);
+      },
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({
+      jobsFailed: 1,
+      questionsInterrupted: 1,
+      manualOverrides: 0,
+    });
+    expect(await store.getJob(claimed.id)).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "WAIT_INTERRUPTED",
+    });
+    expect((await store.getQuestion(question.id))?.state).toBe("aborted");
+    expect(moves).toEqual([layout().buckets.Failed.id]);
+    expect(remote.bucketId).toBe(layout().buckets.Failed.id);
+    expect(comments[0]).toContain("WAIT_INTERRUPTED");
+  });
+
   it("preserves a manual bucket when a restart finds an unresolved question there", async () => {
     const store = await openStore();
     const claimed = await store.tryClaim(task(2));
@@ -362,6 +486,42 @@ describe("reconcileStartup", () => {
       layouts: new Map([[projectId(42), layout()]]),
     });
     expect(comments).toHaveLength(1);
+  });
+
+  it("treats a done task in Running as an owner override during startup", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    const comments: string[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => ({ ...task(3), done: true }),
+      moveTask: async () => {
+        throw new Error("must preserve a done task");
+      },
+      listComments: async () => [],
+      postComment: async (_taskId, body) => {
+        comments.push(body);
+        return commentId(302);
+      },
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({ jobsFailed: 1, manualOverrides: 1 });
+    expect(await store.getJob(claimed.id)).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "MANUAL_STATE_OVERRIDE",
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain("done=true");
   });
 
   it("preserves jobs whose remote project has no configured layout", async () => {

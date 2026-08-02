@@ -72,6 +72,19 @@ export async function reconcileStartup(
         const job = await input.store.getJob(intent.jobId);
         if (job?.state === "failed") {
           const reviewCommentKey = `job:${job.id}:completion:review-comment`;
+          const staleClaimIntent =
+            (intent.operation === "assign_runner" &&
+              intent.idempotencyKey === `job:${job.id}:claim:assign`) ||
+            (intent.operation === "post_comment" &&
+              intent.idempotencyKey === `job:${job.id}:claim:comment`);
+          if (staleClaimIntent) {
+            await input.store.failMutation(
+              intent.idempotencyKey,
+              "claim mutation belongs to a terminally failed job",
+            );
+            mutationFailures += 1;
+            continue;
+          }
           if (
             intent.operation === "post_comment" &&
             intent.idempotencyKey === reviewCommentKey
@@ -160,11 +173,26 @@ export async function reconcileStartup(
         question.id,
         "runner restarted while waiting for an answer",
       );
-      const isWaiting =
+      const sameActiveProject =
         layout !== undefined &&
         remoteTask.projectId === job.projectId &&
-        remoteTask.bucketId === layout.buckets.Waiting.id;
-      const terminalErrorCode = isWaiting
+        !remoteTask.done;
+      const isWaiting =
+        sameActiveProject && remoteTask.bucketId === layout.buckets.Waiting.id;
+      const acceptedAnswerMove = await input.store.getMutationIntent(
+        `job:${job.id}:question:${question.id}:running`,
+      );
+      // The Waiting -> Running move is durable and may have succeeded just
+      // before the process exited. The original in-memory tool call still
+      // cannot be resumed, but this is a runner-owned interruption rather than
+      // a human override and must be compensated from Running to Failed.
+      const acceptedAnswerInterrupted =
+        job.state === "waiting" &&
+        sameActiveProject &&
+        remoteTask.bucketId === layout.buckets.Running.id &&
+        acceptedAnswerMove?.state === "succeeded";
+      const runnerOwnedInterruption = isWaiting || acceptedAnswerInterrupted;
+      const terminalErrorCode = runnerOwnedInterruption
         ? "WAIT_INTERRUPTED"
         : "MANUAL_STATE_OVERRIDE";
       await input.store.transition(job.id, {
@@ -172,8 +200,11 @@ export async function reconcileStartup(
         terminalErrorCode,
       });
       jobsFailed += 1;
-      if (isWaiting) {
+      if (runnerOwnedInterruption) {
         questionsInterrupted += 1;
+        const expectedBucketId = acceptedAnswerInterrupted
+          ? layout.buckets.Running.id
+          : layout.buckets.Waiting.id;
         await deliverMutation(
           input,
           job.id,
@@ -182,7 +213,7 @@ export async function reconcileStartup(
           `job:${job.id}:startup-wait-failed:move`,
           {
             bucketId: layout.buckets.Failed.id,
-            expectedBucketId: layout.buckets.Waiting.id,
+            expectedBucketId,
           },
         );
         await deliverMutation(
@@ -194,7 +225,7 @@ export async function reconcileStartup(
           {
             body: runnerComment(
               `job:${job.id}:startup-wait-failed:comment`,
-              `WAIT_INTERRUPTED: the daemon restarted while waiting for question ${question.id}. Move this task to Ready to retry.`,
+              `WAIT_INTERRUPTED: the daemon restarted while question ${question.id} was active. Move this task to Ready to retry.`,
             ),
           },
         );
@@ -379,7 +410,7 @@ export async function reconcileStartup(
     }
 
     const expectedBucket = layout.buckets.Running.id;
-    if (remoteTask.bucketId !== expectedBucket) {
+    if (remoteTask.done || remoteTask.bucketId !== expectedBucket) {
       await input.store.transition(job.id, {
         state: "failed",
         terminalErrorCode: "MANUAL_STATE_OVERRIDE",
@@ -395,7 +426,7 @@ export async function reconcileStartup(
         {
           body: runnerComment(
             `job:${job.id}:startup-manual-override:comment`,
-            `MANUAL_STATE_OVERRIDE: expected bucket ${expectedBucket} for ${job.state} job but observed ${remoteTask.bucketId}. The runner preserved the selected bucket.`,
+            `MANUAL_STATE_OVERRIDE: expected bucket ${expectedBucket} and done=false for ${job.state} job but observed bucket ${remoteTask.bucketId}, done=${remoteTask.done}. The runner preserved the selected state.`,
           ),
         },
       );
