@@ -373,6 +373,97 @@ describe("executePiComment", () => {
     expect(deps.comments).toHaveLength(1);
   });
 
+  it("observes remote overrides before dispatching queued commands and persists the report atomically", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const queued = {
+      id: commentId(29),
+      taskId: job.taskId,
+      authorId: userId(1),
+      body: "/pi steer must not dispatch",
+      createdAt: "",
+    };
+    let current = job;
+    let terminalFailureCalls = 0;
+    const durableIntents = new Map<
+      string,
+      { state: "pending" | "succeeded"; remoteId: string | null }
+    >();
+    const monitorStore = {
+      ...deps.store,
+      async getJob() {
+        return current;
+      },
+      async transition() {
+        throw new Error("manual overrides must use an atomic terminal failure");
+      },
+      async recordTerminalFailure(
+        _jobId: Job["id"],
+        terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+        intents: readonly { idempotencyKey: string }[],
+      ) {
+        terminalFailureCalls += 1;
+        for (const intent of intents) {
+          durableIntents.set(intent.idempotencyKey, {
+            state: "pending",
+            remoteId: null,
+          });
+        }
+        current = { ...current, state: "failed", terminalErrorCode };
+        return current;
+      },
+      async recordMutationIntent(input: { idempotencyKey: string }) {
+        const intent = durableIntents.get(input.idempotencyKey);
+        if (intent === undefined) {
+          throw new Error("override report was not persisted atomically");
+        }
+        return { ...input, ...intent } as never;
+      },
+      async completeMutation(key: string, remoteId: string | null) {
+        durableIntents.set(key, { state: "succeeded", remoteId });
+        return {} as never;
+      },
+      async recordCommentWatermark() {},
+    } as unknown as JobStore;
+    const gateway = {
+      ...deps.gateway,
+      async listComments() {
+        return [queued];
+      },
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: layout.buckets.Review.id,
+          done: false,
+        };
+      },
+    } as unknown as VikunjaGateway;
+
+    const monitor = startPiCommentMonitor({
+      job,
+      handle: handle(calls),
+      ownerUserId: userId(1),
+      store: monitorStore,
+      gateway,
+      layout,
+      initialCommentId: null,
+      pollIntervalMs: 10,
+      logError: () => undefined,
+    });
+    await monitor.done;
+
+    expect(calls).toEqual(["abort:owner selected another task bucket"]);
+    expect(terminalFailureCalls).toBe(1);
+    expect(current.terminalErrorCode).toBe("MANUAL_STATE_OVERRIDE");
+    expect(durableIntents.get("job:job-1:manual-state-override")?.state).toBe(
+      "succeeded",
+    );
+  });
+
   it("retries a command when acknowledgement delivery fails before advancing the watermark", async () => {
     const deps = makeDeps();
     const calls: string[] = [];
@@ -511,15 +602,11 @@ describe("executePiComment", () => {
       async getJob() {
         return current;
       },
-      async transition(
+      async recordTerminalFailure(
         _jobId: Job["id"],
-        transition: Parameters<JobStore["transition"]>[1],
+        terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
       ) {
-        current = {
-          ...current,
-          state: transition.state,
-          terminalErrorCode: "MANUAL_STATE_OVERRIDE",
-        };
+        current = { ...current, state: "failed", terminalErrorCode };
         return current;
       },
     } as unknown as JobStore;

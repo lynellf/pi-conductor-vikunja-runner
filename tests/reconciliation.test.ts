@@ -569,6 +569,14 @@ describe("reconcileStartup", () => {
     const claimed = await store.tryClaim(task(2));
     if (claimed === null) throw new Error("claim unexpectedly failed");
     await store.transition(claimed.id, { state: "running" });
+    const originalRecordTerminalFailure =
+      store.recordTerminalFailure.bind(store);
+    let overridePersistedAtomically = false;
+    store.recordTerminalFailure = async (...args) => {
+      const failed = await originalRecordTerminalFailure(...args);
+      overridePersistedAtomically = true;
+      return failed;
+    };
     const remote = task(5);
     let moves = 0;
     const comments: string[] = [];
@@ -594,6 +602,7 @@ describe("reconcileStartup", () => {
     });
 
     expect(result.manualOverrides).toBe(1);
+    expect(overridePersistedAtomically).toBe(true);
     expect(moves).toBe(0);
     expect(comments).toHaveLength(1);
     expect(comments[0]).toContain("MANUAL_STATE_OVERRIDE");

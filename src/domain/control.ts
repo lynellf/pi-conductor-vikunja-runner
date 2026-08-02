@@ -424,6 +424,10 @@ export const startPiCommentMonitor = (
           const comments = [
             ...(await input.gateway.listComments(input.job.taskId, cursor)),
           ].sort((left, right) => left.id - right.id);
+          // A queued command may have arrived alongside an owner-selected
+          // bucket change. Observe remote state after reading the batch but
+          // before dispatching any non-idempotent conductor command.
+          if (!(await observeManualOverride(input, controller))) break;
           for (const comment of comments) {
             if (controller.signal.aborted) break;
             try {
@@ -459,7 +463,6 @@ export const startPiCommentMonitor = (
               break;
             }
           }
-          if (!(await observeManualOverride(input, controller))) break;
         } catch (error) {
           logError(error instanceof Error ? error : new Error(String(error)));
         }

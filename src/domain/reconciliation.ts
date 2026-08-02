@@ -293,10 +293,22 @@ export async function reconcileStartup(
     }
 
     if (layout === undefined || remoteTask.projectId !== job.projectId) {
-      await input.store.transition(job.id, {
-        state: "failed",
-        terminalErrorCode: "MANUAL_STATE_OVERRIDE",
-      });
+      const commentKey = `job:${job.id}:startup-manual-override:comment`;
+      const commentRequest = {
+        body: runnerComment(
+          commentKey,
+          `MANUAL_STATE_OVERRIDE: task was observed in project ${remoteTask.projectId}, which does not match the persisted project ${job.projectId}. The runner preserved the selected bucket.`,
+        ),
+      };
+      await input.store.recordTerminalFailure(job.id, "MANUAL_STATE_OVERRIDE", [
+        {
+          jobId: job.id,
+          taskId: remoteTask.id,
+          operation: "post_comment",
+          idempotencyKey: commentKey,
+          request: commentRequest,
+        },
+      ]);
       jobsFailed += 1;
       manualOverrides += 1;
       await deliverMutation(
@@ -304,13 +316,8 @@ export async function reconcileStartup(
         job.id,
         remoteTask.id,
         "post_comment",
-        `job:${job.id}:startup-manual-override:comment`,
-        {
-          body: runnerComment(
-            `job:${job.id}:startup-manual-override:comment`,
-            `MANUAL_STATE_OVERRIDE: task was observed in project ${remoteTask.projectId}, which does not match the persisted project ${job.projectId}. The runner preserved the selected bucket.`,
-          ),
-        },
+        commentKey,
+        commentRequest,
       );
       continue;
     }
@@ -497,10 +504,22 @@ export async function reconcileStartup(
 
     const expectedBucket = layout.buckets.Running.id;
     if (remoteTask.done || remoteTask.bucketId !== expectedBucket) {
-      await input.store.transition(job.id, {
-        state: "failed",
-        terminalErrorCode: "MANUAL_STATE_OVERRIDE",
-      });
+      const commentKey = `job:${job.id}:startup-manual-override:comment`;
+      const commentRequest = {
+        body: runnerComment(
+          commentKey,
+          `MANUAL_STATE_OVERRIDE: expected bucket ${expectedBucket} and done=false for ${job.state} job but observed bucket ${remoteTask.bucketId}, done=${remoteTask.done}. The runner preserved the selected state.`,
+        ),
+      };
+      await input.store.recordTerminalFailure(job.id, "MANUAL_STATE_OVERRIDE", [
+        {
+          jobId: job.id,
+          taskId: remoteTask.id,
+          operation: "post_comment",
+          idempotencyKey: commentKey,
+          request: commentRequest,
+        },
+      ]);
       jobsFailed += 1;
       manualOverrides += 1;
       await deliverMutation(
@@ -508,13 +527,8 @@ export async function reconcileStartup(
         job.id,
         remoteTask.id,
         "post_comment",
-        `job:${job.id}:startup-manual-override:comment`,
-        {
-          body: runnerComment(
-            `job:${job.id}:startup-manual-override:comment`,
-            `MANUAL_STATE_OVERRIDE: expected bucket ${expectedBucket} and done=false for ${job.state} job but observed bucket ${remoteTask.bucketId}, done=${remoteTask.done}. The runner preserved the selected state.`,
-          ),
-        },
+        commentKey,
+        commentRequest,
       );
     }
   }

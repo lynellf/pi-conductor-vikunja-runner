@@ -172,6 +172,22 @@ const makeDependencies = (
     async getJob() {
       return state.currentJob;
     },
+    async recordTerminalFailure(
+      _id: Job["id"],
+      terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      intents: readonly { idempotencyKey: string }[],
+    ) {
+      state.mutationKeys.push(
+        ...intents.map((intent) => intent.idempotencyKey),
+      );
+      state.transitions.push("failed");
+      state.currentJob = {
+        ...state.currentJob,
+        state: "failed",
+        terminalErrorCode,
+      };
+      return state.currentJob;
+    },
     async transition(
       _id: Job["id"],
       transition: { state: string; terminalErrorCode?: string },

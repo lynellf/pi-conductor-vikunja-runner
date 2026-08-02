@@ -13,44 +13,6 @@ const inFlight = new Map<string, Promise<unknown>>();
 export const manualOverrideKey = (jobId: JobId): string =>
   `job:${jobId}:manual-state-override`;
 
-/**
- * Mark a job as manually overridden without turning a concurrent transition
- * into a second failure. SqliteJobStore uses a compare-and-swap update, so a
- * monitor and ask_user bridge can race between their read and transition.
- */
-export const markManualOverride = async (
-  store: Pick<JobStore, "getJob" | "transition">,
-  jobId: JobId,
-): Promise<Job> => {
-  const current = await store.getJob(jobId);
-  if (current === null) throw new Error(`job ${jobId} was not found`);
-  if (
-    current.state === "failed" &&
-    current.terminalErrorCode === "MANUAL_STATE_OVERRIDE"
-  ) {
-    return current;
-  }
-  try {
-    return await store.transition(jobId, {
-      state: "failed",
-      terminalErrorCode: "MANUAL_STATE_OVERRIDE",
-    });
-  } catch (error) {
-    // Another live path may have won the CAS transition. Re-read before
-    // surfacing an error; only suppress the race when it produced the exact
-    // terminal state this helper owns.
-    const observed = await store.getJob(jobId);
-    if (
-      observed !== null &&
-      observed.state === "failed" &&
-      observed.terminalErrorCode === "MANUAL_STATE_OVERRIDE"
-    ) {
-      return observed;
-    }
-    throw error;
-  }
-};
-
 export const manualOverrideComment = (
   jobId: JobId,
   maxChars: number,
@@ -76,7 +38,10 @@ export const reportManualOverride = async (input: {
   readonly job: Pick<Job, "id" | "taskId">;
   readonly store: Pick<
     JobStore,
-    "getJob" | "transition" | "recordMutationIntent" | "completeMutation"
+    | "getJob"
+    | "recordTerminalFailure"
+    | "recordMutationIntent"
+    | "completeMutation"
   >;
   readonly gateway: {
     postComment(taskId: TaskId, body: string): Promise<CommentId>;
@@ -89,15 +54,46 @@ export const reportManualOverride = async (input: {
 }): Promise<Job> => {
   const key = manualOverrideKey(input.job.id);
   return withIdempotencyLock(key, async () => {
-    const failed = await markManualOverride(input.store, input.job.id);
+    let failed = await input.store.getJob(input.job.id);
+    if (failed === null) throw new Error(`job ${input.job.id} was not found`);
     const body = manualOverrideComment(failed.id, input.maxCommentChars);
-    const intent = await input.store.recordMutationIntent({
+    const mutation = {
       jobId: failed.id,
       taskId: failed.taskId,
       operation: "post_comment",
       idempotencyKey: key,
       request: { body },
-    });
+    } as const;
+    if (
+      failed.state !== "failed" ||
+      failed.terminalErrorCode !== "MANUAL_STATE_OVERRIDE"
+    ) {
+      try {
+        // Make terminal state and its owner-facing explanation visible in one
+        // SQLite transaction. Restart replay can therefore never observe the
+        // failed job without the durable report intent.
+        failed = await input.store.recordTerminalFailure(
+          failed.id,
+          "MANUAL_STATE_OVERRIDE",
+          [mutation],
+          "task state changed while the runner was active",
+        );
+      } catch (error) {
+        // The monitor and ask_user bridge can race. Suppress only a competing
+        // transition that produced this exact terminal state; its atomic
+        // transaction also persisted the same idempotency key.
+        const observed = await input.store.getJob(input.job.id);
+        if (
+          observed === null ||
+          observed.state !== "failed" ||
+          observed.terminalErrorCode !== "MANUAL_STATE_OVERRIDE"
+        ) {
+          throw error;
+        }
+        failed = observed;
+      }
+    }
+    const intent = await input.store.recordMutationIntent(mutation);
     if (intent.state === "succeeded") return failed;
     if (intent.state === "failed") {
       throw new Error(intent.error ?? `comment ${key} failed`);

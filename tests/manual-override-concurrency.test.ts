@@ -137,6 +137,34 @@ const runConcurrentOverride = async (order: OverrideOrder) => {
     async getJob() {
       return currentJob;
     },
+    async recordTerminalFailure(
+      _id: Job["id"],
+      terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      intents: readonly {
+        idempotencyKey: string;
+        request: { body?: string };
+      }[],
+    ) {
+      for (const intent of intents) {
+        if (!mutations.has(intent.idempotencyKey)) {
+          mutations.set(intent.idempotencyKey, {
+            state: "pending",
+            remoteId: null,
+            body: intent.request.body ?? "",
+          });
+        }
+      }
+      currentJob = {
+        ...currentJob,
+        state: "failed",
+        terminalErrorCode,
+      };
+      if (!injectedTransitionRace) {
+        injectedTransitionRace = true;
+        throw new Error("job changed concurrently");
+      }
+      return currentJob;
+    },
     async transition(
       _id: Job["id"],
       transition: Parameters<JobStore["transition"]>[1],
@@ -147,10 +175,6 @@ const runConcurrentOverride = async (order: OverrideOrder) => {
         terminalErrorCode:
           transition.state === "failed" ? transition.terminalErrorCode : null,
       };
-      if (transition.state === "failed" && !injectedTransitionRace) {
-        injectedTransitionRace = true;
-        throw new Error("job changed concurrently");
-      }
       return currentJob;
     },
   } as unknown as JobStore;

@@ -137,6 +137,64 @@ describe("runner daemon", () => {
     ]);
   });
 
+  it("retries deferred recovery after a poll interval without requiring restart", async () => {
+    const controller = new AbortController();
+    const deferredJobId = "job-deferred" as Job["id"];
+    const calls: string[] = [];
+    let reconciliations = 0;
+    let cycles = 0;
+    const result = await runDaemon(
+      "/etc/runner.yaml",
+      {
+        loadConfig: async () => config(),
+        readCredential: async () => "credential",
+        createRuntime: async () => runtime(),
+        startAnalytics: async () => ({ shutdown: async () => undefined }),
+        validateLayouts: async () => new Map(),
+        reconcile: async () => {
+          reconciliations += 1;
+          calls.push(`reconcile:${reconciliations}`);
+          return {
+            jobsChecked: 1,
+            jobsFailed: 0,
+            questionsInterrupted: 0,
+            manualOverrides: 0,
+            mutationsReplayed: 0,
+            mutationsPending: 0,
+            mutationFailures: 0,
+            deferredJobIds:
+              reconciliations === 1 ? [deferredJobId] : ([] as Job["id"][]),
+          };
+        },
+        resumeJobs: async (input) => {
+          calls.push(
+            `resume:${input.deferredJobIds?.includes(deferredJobId) ?? false}`,
+          );
+          return input.deferredJobIds?.includes(deferredJobId) ? 0 : 1;
+        },
+        runCycle: async () => {
+          cycles += 1;
+          calls.push(`cycle:${cycles}`);
+          if (cycles === 2) controller.abort("recovered");
+          return report;
+        },
+        sleep: async () => calls.push("sleep"),
+      },
+      controller.signal,
+    );
+
+    expect(result).toMatchObject({ cycles: 2, resumedJobs: 1 });
+    expect(calls).toEqual([
+      "reconcile:1",
+      "resume:true",
+      "cycle:1",
+      "sleep",
+      "reconcile:2",
+      "resume:false",
+      "cycle:2",
+    ]);
+  });
+
   it("continues coding when the analytics credential is unavailable", async () => {
     const controller = new AbortController();
     const errors: Error[] = [];

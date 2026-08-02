@@ -244,12 +244,12 @@ export const runDaemon = async (
       runtime.gateway,
       config.projects,
     );
-    const reconciliation = await dependencies.reconcile({
+    let reconciliation = await dependencies.reconcile({
       store: runtime.store,
       gateway: runtime.gateway,
       layouts,
     });
-    const resumedJobs = await dependencies.resumeJobs({
+    let resumedJobs = await dependencies.resumeJobs({
       config,
       runtime,
       layouts,
@@ -260,7 +260,40 @@ export const runDaemon = async (
       signal,
     });
 
+    let deferredJobIds = reconciliation.deferredJobIds ?? [];
     while (!signal.aborted) {
+      // A transient startup read leaves the durable job active and occupying
+      // the global slot. Retry only after a full poll interval has elapsed,
+      // then resume jobs whose remote state can now be confirmed.
+      if (cycles > 0 && deferredJobIds.length > 0) {
+        try {
+          const retriedReconciliation = await dependencies.reconcile({
+            store: runtime.store,
+            gateway: runtime.gateway,
+            layouts,
+          });
+          const retriedResumes = await dependencies.resumeJobs({
+            config,
+            runtime,
+            layouts,
+            ...(retriedReconciliation.deferredJobIds === undefined
+              ? {}
+              : { deferredJobIds: retriedReconciliation.deferredJobIds }),
+            logError: dependencies.logError,
+            signal,
+          });
+          reconciliation = retriedReconciliation;
+          deferredJobIds = retriedReconciliation.deferredJobIds ?? [];
+          resumedJobs += retriedResumes;
+        } catch (error) {
+          dependencies.logError(
+            error instanceof Error
+              ? error
+              : new Error("deferred runner recovery failed"),
+          );
+        }
+      }
+      if (signal.aborted) break;
       cycles += 1;
       try {
         const cycle = dependencies.runCycle({

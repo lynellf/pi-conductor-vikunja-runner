@@ -335,13 +335,22 @@ describe("completeConductorJob", () => {
 
   it("preserves the override when another live path wins the terminal transition race", async () => {
     const dependencies = makeInput();
-    const originalTransition = dependencies.input.store.transition.bind(
-      dependencies.input.store,
-    );
+    const originalTerminalFailure =
+      dependencies.input.store.recordTerminalFailure.bind(
+        dependencies.input.store,
+      );
     let raced = false;
-    dependencies.input.store.transition = async (id, transition) => {
-      if (transition.state === "failed" && !raced) {
+    dependencies.input.store.recordTerminalFailure = async (
+      id,
+      terminalErrorCode,
+      intents,
+      questionAbortReason,
+    ) => {
+      if (terminalErrorCode === "MANUAL_STATE_OVERRIDE" && !raced) {
         raced = true;
+        for (const intent of intents) {
+          await dependencies.input.store.recordMutationIntent(intent);
+        }
         dependencies.setCurrent({
           ...job,
           state: "failed",
@@ -349,7 +358,12 @@ describe("completeConductorJob", () => {
         });
         throw new Error("job transition compare-and-swap lost");
       }
-      return originalTransition(id, transition);
+      return originalTerminalFailure(
+        id,
+        terminalErrorCode,
+        intents,
+        questionAbortReason,
+      );
     };
     dependencies.input.gateway = {
       async getTask() {

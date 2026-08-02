@@ -208,10 +208,17 @@ describe("runPollCycle", () => {
     expect(report.execution).toBeNull();
     expect(execute).not.toHaveBeenCalled();
     expect(validateProjectLayout).toHaveBeenCalledTimes(2);
-    expect(store.transition).toHaveBeenLastCalledWith(job.id, {
-      state: "failed",
-      terminalErrorCode: "MANUAL_STATE_OVERRIDE",
-    });
+    expect(store.recordTerminalFailure).toHaveBeenLastCalledWith(
+      job.id,
+      "MANUAL_STATE_OVERRIDE",
+      [
+        expect.objectContaining({
+          operation: "post_comment",
+          idempotencyKey: `job:${job.id}:manual-state-override`,
+        }),
+      ],
+      "task state changed while the runner was active",
+    );
     expect(gateway.moveTask).toHaveBeenCalledOnce();
     expect(gateway.postComment).toHaveBeenLastCalledWith(
       task.id,
