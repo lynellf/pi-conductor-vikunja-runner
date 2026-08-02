@@ -168,55 +168,66 @@ const failClaim = async (
 
   const failureCode =
     overrideMessage === null ? "VIKUNJA_UNAVAILABLE" : "MANUAL_STATE_OVERRIDE";
-  const failed = await input.store.transition(job.id, {
-    state: "failed",
-    terminalErrorCode: failureCode,
-  });
+  const detail =
+    overrideMessage ??
+    "claim could not be completed. Check the runner logs, then move the task back to Ready to retry.";
+  const failureKey = `job:${job.id}:claim:failure`;
+  const failureBody = truncate(
+    `[pi-runner][idempotency:${failureKey}] ${failureCode}: ${detail}`,
+    input.maxCommentChars ?? 12000,
+  );
+  const recoveryKey = `job:${job.id}:claim:move-failed`;
+  const recoveryRequest = moveRequest(
+    input.layout.buckets.Failed.id,
+    input.layout.buckets.Running.id,
+  );
+  const terminalIntents: Parameters<JobStore["recordMutationIntent"]>[0][] = [];
   if (moveAttempted && (shouldCompensate || remoteStateUnknown)) {
-    const recoveryKey = `job:${job.id}:claim:move-failed`;
+    terminalIntents.push({
+      jobId: job.id,
+      taskId: job.taskId,
+      operation: "move_task",
+      idempotencyKey: recoveryKey,
+      request: recoveryRequest,
+    });
+  }
+  terminalIntents.push({
+    jobId: job.id,
+    taskId: job.taskId,
+    operation: "post_comment",
+    idempotencyKey: failureKey,
+    request: { body: failureBody },
+  });
+  // Release the claim and persist every compensating action in one local
+  // transaction. A crash can delay delivery, but cannot strand Running work
+  // without a guarded Failed move to replay.
+  const failed = await input.store.recordTerminalFailure(
+    job.id,
+    failureCode,
+    terminalIntents,
+  );
+  if (moveAttempted && shouldCompensate) {
     try {
-      const recovery = await input.store.recordMutationIntent({
-        jobId: job.id,
-        taskId: job.taskId,
-        operation: "move_task",
-        idempotencyKey: recoveryKey,
-        request: moveRequest(
-          input.layout.buckets.Failed.id,
-          input.layout.buckets.Running.id,
-        ),
-      });
-      // If the state was not observed, do not issue an unguarded mutation now;
-      // startup replay re-reads the task and only moves confirmed Running work.
-      if (shouldCompensate && recovery.state === "pending") {
-        await deliverMutation(
-          input.store,
-          input.gateway,
-          job,
-          job.taskId,
-          "move_task",
-          recoveryKey,
-          moveRequest(
-            input.layout.buckets.Failed.id,
-            input.layout.buckets.Running.id,
-          ),
-        );
-      }
+      await deliverMutation(
+        input.store,
+        input.gateway,
+        job,
+        job.taskId,
+        "move_task",
+        recoveryKey,
+        recoveryRequest,
+      );
     } catch {
-      // Keep a pending recovery intent for startup reconciliation when remote
-      // compensation cannot be completed in this process.
+      // Keep the pending recovery intent for startup reconciliation.
     }
   }
   try {
-    const idempotencyKey = `job:${job.id}:claim:failure`;
-    const detail =
-      overrideMessage ??
-      "claim could not be completed. Check the runner logs, then move the task back to Ready to retry.";
     await deliverCommentMilestone(
       input,
       job,
       "failure",
-      idempotencyKey,
-      `[pi-runner][idempotency:${idempotencyKey}] ${failureCode}: ${detail}`,
+      failureKey,
+      failureBody,
     );
   } catch {
     // The failed job and pending mutation intent remain durable for reconciliation.

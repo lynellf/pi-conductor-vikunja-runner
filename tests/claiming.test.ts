@@ -61,6 +61,9 @@ const makeStore = (
   } = {},
 ) => {
   const transitions: Array<Parameters<JobStore["transition"]>[1]> = [];
+  const terminalFailureIntents: Parameters<
+    JobStore["recordMutationIntent"]
+  >[0][] = [];
   const mutationCalls: string[] = [];
   const failedMutationCalls: string[] = [];
   const milestones = new Map<
@@ -71,6 +74,7 @@ const makeStore = (
     transitions,
     mutationCalls,
     failedMutationCalls,
+    terminalFailureIntents,
     async tryClaim() {
       return remoteJob;
     },
@@ -85,6 +89,16 @@ const makeStore = (
         terminalErrorCode:
           transition.state === "failed" ? transition.terminalErrorCode : null,
       } as Job;
+    },
+    async recordTerminalFailure(
+      _id: Job["id"],
+      terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      intents: readonly Parameters<JobStore["recordMutationIntent"]>[0][],
+    ) {
+      terminalFailureIntents.push(...intents);
+      const transition = { state: "failed" as const, terminalErrorCode };
+      transitions.push(transition);
+      return { ...job, ...transition } as Job;
     },
     async recordMutationIntent(input: { idempotencyKey: string }) {
       mutationCalls.push(input.idempotencyKey);
@@ -275,6 +289,15 @@ describe("claimReadyTask", () => {
     expect(result.job.terminalErrorCode).toBe("VIKUNJA_UNAVAILABLE");
     expect(events).toEqual(["move", "move", "comment"]);
     expect(store.failedMutationCalls).toContain("job:job-1:claim:move");
+    expect(store.terminalFailureIntents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "move_task",
+          idempotencyKey: "job:job-1:claim:move-failed",
+          request: { bucketId: 6, expectedBucketId: 3 },
+        }),
+      ]),
+    );
     expect(store.mutationCalls).toContain("job:job-1:claim:move-failed");
   });
 
