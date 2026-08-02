@@ -118,6 +118,11 @@ export const defaultResumeJobs = async (
         ui,
         maxCommentChars: input.config.runner.maxCommentChars,
       });
+      const ownerCancellation = new AbortController();
+      const cancellationSignal =
+        input.signal === undefined
+          ? ownerCancellation.signal
+          : AbortSignal.any([input.signal, ownerCancellation.signal]);
       const monitor = startPiCommentMonitor({
         job: recovered.job,
         handle: recovered.handle,
@@ -128,6 +133,7 @@ export const defaultResumeJobs = async (
         layout,
         maxCommentChars: input.config.runner.maxCommentChars,
         logError: input.logError,
+        onAbortRequested: () => ownerCancellation.abort(),
       });
       const detachShutdownAbort = attachShutdownAbort(
         recovered.handle,
@@ -144,6 +150,7 @@ export const defaultResumeJobs = async (
           store: input.runtime.store,
           repository: input.runtime.repository,
           gateway: input.runtime.gateway,
+          cancellationSignal,
         });
         resumed += 1;
       } finally {

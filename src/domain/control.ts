@@ -14,6 +14,8 @@ export interface ExecutePiCommentInput {
   readonly store: JobStore;
   readonly gateway: Pick<VikunjaGateway, "postComment">;
   readonly maxCommentChars?: number;
+  /** Stop completion side effects after an owner requests cancellation. */
+  readonly onAbortRequested?: () => void;
 }
 
 export type ExecutePiCommentResult =
@@ -156,6 +158,7 @@ export const executePiComment = async (
       return { status: "ignored" };
     }
     const key = `${keyBase}:abort`;
+    input.onAbortRequested?.();
     const existing = await input.store.getMilestone(input.job.id, key);
     if (existing === null) {
       await input.handle.abort(action.reason ?? "owner requested abort");
@@ -206,6 +209,8 @@ export interface PiCommentMonitorInput {
   /** The last comment already consumed while constructing the conductor goal. */
   readonly initialCommentId?: CommentId | null;
   readonly logError?: (error: Error) => void;
+  /** Propagate owner abort commands to the completion pipeline. */
+  readonly onAbortRequested?: () => void;
 }
 
 export interface PiCommentMonitor {
@@ -447,6 +452,9 @@ export const startPiCommentMonitor = (
                   ...(input.maxCommentChars === undefined
                     ? {}
                     : { maxCommentChars: input.maxCommentChars }),
+                  ...(input.onAbortRequested === undefined
+                    ? {}
+                    : { onAbortRequested: input.onAbortRequested }),
                 });
               }
               // Advance only after the command and its acknowledgement have

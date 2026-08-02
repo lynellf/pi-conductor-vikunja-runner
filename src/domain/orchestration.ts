@@ -79,6 +79,8 @@ export interface CompleteConductorJobInput {
     "getTask" | "moveTask" | "postComment"
   >;
   readonly maxCommentChars?: number;
+  /** Cancellation requested by an owner command or daemon shutdown. */
+  readonly cancellationSignal?: AbortSignal;
 }
 
 export interface CompletedConductorJobResult {
@@ -315,6 +317,82 @@ const failCompletedJob = async (
     // Keep the completed failure durable; pending intents are replayed later.
   }
   throw new JobCompletionError(`job completion failed: ${code}`, failed, cause);
+};
+
+const confirmCompletionOwnership = async (
+  input: CompleteConductorJobInput,
+): Promise<void> => {
+  const durableJob = await input.store.getJob(input.job.id);
+  if (durableJob === null) {
+    return failCompletedJob(
+      input,
+      "VIKUNJA_UNAVAILABLE",
+      "the durable job state could not be confirmed before publishing",
+    );
+  }
+  if (durableJob.state !== "running") {
+    throw new JobCompletionError(
+      "job completion stopped because the durable job is no longer active",
+      durableJob,
+    );
+  }
+  if (input.cancellationSignal?.aborted === true) {
+    return failCompletedJob(
+      input,
+      "CONDUCTOR_SESSION_FAILED",
+      "the owner cancelled the job before publishing",
+    );
+  }
+
+  let currentTask: CodingTask;
+  try {
+    currentTask = await input.gateway.getTask(input.job.taskId);
+  } catch (error) {
+    return failCompletedJob(
+      input,
+      "VIKUNJA_UNAVAILABLE",
+      "the task state could not be confirmed before publishing",
+      error,
+    );
+  }
+  if (
+    currentTask.projectId === input.job.projectId &&
+    !currentTask.done &&
+    currentTask.bucketId === input.layout.buckets.Running.id
+  ) {
+    return;
+  }
+
+  let failed: Job;
+  try {
+    failed = await reportManualOverride({
+      job: input.job,
+      store: input.store,
+      gateway: input.gateway,
+      maxCommentChars: input.maxCommentChars ?? 12000,
+    });
+  } catch (error) {
+    // The terminal override is durable even when comment delivery is
+    // unavailable; preserve the stable job error for the caller while
+    // leaving the mutation intent pending for startup replay.
+    const observed = await input.store.getJob(input.job.id);
+    if (
+      observed === null ||
+      observed.state !== "failed" ||
+      observed.terminalErrorCode !== "MANUAL_STATE_OVERRIDE"
+    ) {
+      throw error;
+    }
+    throw new JobCompletionError(
+      "job completion detected a manual state override",
+      observed,
+      error,
+    );
+  }
+  throw new JobCompletionError(
+    "job completion detected a manual state override",
+    failed,
+  );
 };
 
 type TerminalFailureActionsInput = {
@@ -558,6 +636,11 @@ export const completeConductorJob = async (
     );
   }
 
+  // Verification can outlive the conductor. Recheck both the durable job and
+  // Vikunja immediately before the irreversible publish side effect so a late
+  // owner abort or bucket move cannot push a cancelled attempt.
+  await confirmCompletionOwnership(input);
+
   let publish: PublishResult;
   try {
     publish = await input.repository.publish(
@@ -573,56 +656,9 @@ export const completeConductorJob = async (
     );
   }
 
-  // Re-read immediately before the terminal bucket move. A human may have
-  // moved an active task while verification or publishing was running; never
-  // overwrite that choice with Review.
-  let currentTask: CodingTask;
-  try {
-    currentTask = await input.gateway.getTask(input.job.taskId);
-  } catch (error) {
-    return failCompletedJob(
-      input,
-      "VIKUNJA_UNAVAILABLE",
-      "the task state could not be confirmed before the Review transition",
-      error,
-    );
-  }
-  if (
-    currentTask.projectId !== input.job.projectId ||
-    currentTask.done ||
-    currentTask.bucketId !== input.layout.buckets.Running.id
-  ) {
-    let failed: Job;
-    try {
-      failed = await reportManualOverride({
-        job: input.job,
-        store: input.store,
-        gateway: input.gateway,
-        maxCommentChars: input.maxCommentChars ?? 12000,
-      });
-    } catch (error) {
-      // The terminal override is durable even when comment delivery is
-      // unavailable; preserve the stable job error for the caller while
-      // leaving the mutation intent pending for startup replay.
-      const observed = await input.store.getJob(input.job.id);
-      if (
-        observed === null ||
-        observed.state !== "failed" ||
-        observed.terminalErrorCode !== "MANUAL_STATE_OVERRIDE"
-      ) {
-        throw error;
-      }
-      throw new JobCompletionError(
-        "job completion detected a manual state override",
-        observed,
-        error,
-      );
-    }
-    throw new JobCompletionError(
-      "job completion detected a manual state override",
-      failed,
-    );
-  }
+  // Publishing can also overlap an owner move. Recheck before exposing Review
+  // so the runner never overwrites the owner's selected terminal state.
+  await confirmCompletionOwnership(input);
 
   const commentKey = `job:${input.job.id}:completion:review-comment`;
   const maxCommentChars = input.maxCommentChars ?? 12000;
@@ -896,6 +932,11 @@ export const executeClaimedJob = async (
     }
     throw error;
   }
+  const ownerCancellation = new AbortController();
+  const cancellationSignal =
+    input.signal === undefined
+      ? ownerCancellation.signal
+      : AbortSignal.any([input.signal, ownerCancellation.signal]);
   const monitor = startPiCommentMonitor({
     job: started.job,
     handle: started.handle,
@@ -904,6 +945,7 @@ export const executeClaimedJob = async (
     gateway: input.gateway,
     layout: input.layout,
     initialCommentId: started.initialCommentId,
+    onAbortRequested: () => ownerCancellation.abort(),
     ...(input.maxCommentChars === undefined
       ? {}
       : { maxCommentChars: input.maxCommentChars }),
@@ -919,6 +961,7 @@ export const executeClaimedJob = async (
       store: input.store,
       repository: input.repository,
       gateway: input.gateway,
+      cancellationSignal,
       ...(input.maxCommentChars === undefined
         ? {}
         : { maxCommentChars: input.maxCommentChars }),

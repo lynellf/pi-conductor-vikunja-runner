@@ -259,7 +259,7 @@ describe("completeConductorJob", () => {
     expect(dependencies.reportBody).toContain("move it to Ready");
   });
 
-  it("preserves a human bucket override before moving a completed task to Review", async () => {
+  it("preserves a human bucket override before publishing a completed task", async () => {
     const dependencies = makeInput();
     dependencies.input.gateway = {
       async getTask() {
@@ -291,7 +291,6 @@ describe("completeConductorJob", () => {
     expect(dependencies.events).toEqual([
       "completion",
       "verify",
-      "publish",
       "transition:failed",
       "comment:false",
     ]);
@@ -392,7 +391,6 @@ describe("completeConductorJob", () => {
     expect(dependencies.events).toEqual([
       "completion",
       "verify",
-      "publish",
       "comment:false",
     ]);
     expect(
@@ -505,6 +503,34 @@ describe("completeConductorJob", () => {
         "job:job-1:completion:move-failed:conductor_session_failed",
       ),
     ).toMatchObject({ state: "failed" });
+  });
+
+  it("stops before publishing when an owner abort arrives during verification", async () => {
+    const dependencies = makeInput();
+    const cancellation = new AbortController();
+    dependencies.input.repository = {
+      async verify() {
+        dependencies.events.push("verify");
+        cancellation.abort();
+        return passingVerification;
+      },
+      async publish() {
+        dependencies.events.push("publish");
+        return localPublish;
+      },
+    } as unknown as RepositoryManager;
+
+    await expect(
+      completeConductorJob({
+        ...dependencies.input,
+        cancellationSignal: cancellation.signal,
+      }),
+    ).rejects.toMatchObject({
+      name: "JobCompletionError",
+      job: { state: "failed", terminalErrorCode: "CONDUCTOR_SESSION_FAILED" },
+    });
+
+    expect(dependencies.events).not.toContain("publish");
   });
 
   it("fails before publishing when verification fails or leaves files dirty", async () => {

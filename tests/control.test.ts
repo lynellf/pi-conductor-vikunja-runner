@@ -300,9 +300,10 @@ describe("executePiComment", () => {
     expect(deps.comments).toEqual([]);
   });
 
-  it("aborts while waiting and includes the owner reason in one acknowledgement", async () => {
+  it("aborts while waiting and propagates cancellation to completion", async () => {
     const deps = makeDeps();
     const calls: string[] = [];
+    let cancellationRequests = 0;
     const waitingJob = { ...job, state: "waiting" as const };
 
     await executePiComment({
@@ -312,9 +313,13 @@ describe("executePiComment", () => {
       handle: handle(calls),
       store: deps.store,
       gateway: deps.gateway,
+      onAbortRequested: () => {
+        cancellationRequests += 1;
+      },
     });
 
     expect(calls).toEqual(["abort:stop this attempt"]);
+    expect(cancellationRequests).toBe(1);
     expect(deps.comments[0]).toContain("stop this attempt");
   });
 
