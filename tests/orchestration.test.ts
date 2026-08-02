@@ -13,6 +13,7 @@ import {
 import type { CodingTask, ProjectLayout } from "../src/domain/types.js";
 import {
   bucketId,
+  commentId,
   projectId,
   taskId,
   userId,
@@ -89,6 +90,12 @@ const makeInput = (overrides: Record<string, unknown> = {}) => {
     },
     async getJob() {
       return persisted;
+    },
+    async recordCommentWatermark(
+      receivedTaskId: number,
+      receivedCommentId: number,
+    ) {
+      events.push(`watermark:${receivedTaskId}:${receivedCommentId}`);
     },
     async transition(
       _id: Job["id"],
@@ -262,6 +269,35 @@ describe("startClaimedJob", () => {
       "prepare",
       "worktree:job-1:pi/vikunja-12-fix-api-auth:/data/jobs/12/worktree",
       "comments",
+      "start:pi/vikunja-12-fix-api-auth:true:true",
+      "run:job-1:run-1",
+    ]);
+  });
+
+  it("persists the consumed comment cursor before starting conductor", async () => {
+    const dependencies = makeInput();
+    dependencies.input.gateway = {
+      async listComments() {
+        dependencies.events.push("comments");
+        return [
+          {
+            id: commentId(40),
+            taskId: task.id,
+            authorId: userId(1),
+            body: "Context consumed by the initial goal",
+            createdAt: "2026-08-02T00:01:00.000Z",
+          },
+        ];
+      },
+    };
+
+    await startClaimedJob(dependencies.input);
+
+    expect(dependencies.events).toEqual([
+      "prepare",
+      "worktree:job-1:pi/vikunja-12-fix-api-auth:/data/jobs/12/worktree",
+      "comments",
+      "watermark:12:40",
       "start:pi/vikunja-12-fix-api-auth:true:true",
       "run:job-1:run-1",
     ]);

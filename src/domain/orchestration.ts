@@ -639,6 +639,12 @@ export const startClaimedJob = async (
         ? {}
         : { includeRunnerComments: input.includeRunnerComments }),
     });
+    // Persist the exact goal snapshot before conductor startup. Recovery can
+    // then process owner commands posted after this cursor instead of treating
+    // every comment observed after a crash as historical.
+    if (initialCommentId !== null) {
+      await input.store.recordCommentWatermark(input.task.id, initialCommentId);
+    }
     handle = await input.conductor.start(preparedJob, goal, input.ui);
     if (handle.runId.trim() === "") {
       throw new Error("conductor returned an empty run ID");
