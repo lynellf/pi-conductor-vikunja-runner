@@ -273,6 +273,50 @@ describe("executePiComment", () => {
     });
   });
 
+  it("deduplicates an acknowledgement accepted before its response was lost", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    let postAttempts = 0;
+    const input = {
+      job,
+      commentId: commentId(30),
+      action: { kind: "steer", message: "acknowledge once" } as const,
+      handle: handle(calls),
+      store: deps.store,
+      gateway: {
+        async listComments() {
+          return deps.comments.map((body, index) => ({
+            id: commentId(104 + index),
+            taskId: job.taskId,
+            authorId: userId(2),
+            body,
+            createdAt: "",
+          }));
+        },
+        async postComment(_taskId: ReturnType<typeof taskId>, body: string) {
+          postAttempts += 1;
+          deps.comments.push(body);
+          throw new Error("response lost after acceptance");
+        },
+      },
+    };
+
+    await expect(executePiComment(input)).rejects.toThrow(
+      "response lost after acceptance",
+    );
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+
+    expect(calls).toEqual(["steer:acknowledge once"]);
+    expect(postAttempts).toBe(1);
+    expect(deps.comments).toHaveLength(1);
+    expect([...deps.milestones.values()][0]).toMatchObject({
+      deliveryState: "delivered",
+      commentId: commentId(104),
+    });
+  });
+
   it("does not steer when the durable job entered Waiting after monitor startup", async () => {
     const deps = makeDeps();
     const calls: string[] = [];

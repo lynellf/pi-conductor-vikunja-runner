@@ -12,7 +12,8 @@ export interface ExecutePiCommentInput {
   readonly action: PiCommentAction;
   readonly handle: ConductorHandle;
   readonly store: JobStore;
-  readonly gateway: Pick<VikunjaGateway, "postComment">;
+  readonly gateway: Pick<VikunjaGateway, "postComment"> &
+    Partial<Pick<VikunjaGateway, "listComments">>;
   readonly maxCommentChars?: number;
   /** Stop completion side effects after an owner requests cancellation. */
   readonly onAbortRequested?: () => void;
@@ -65,6 +66,23 @@ const postIdempotentComment = async (
     }
     if (intent.state === "failed") {
       throw new Error(intent.error ?? `comment ${idempotencyKey} failed`);
+    }
+    // A transport error can hide a successful Vikunja write. Before retrying
+    // a pending intent, recognize either its exact body or stable marker so a
+    // shortened retry acknowledgement cannot create a duplicate comment.
+    if (input.gateway.listComments !== undefined) {
+      const existing = await input.gateway.listComments(input.job.taskId, null);
+      const marker = `[idempotency:${idempotencyKey}]`;
+      const delivered = existing.find(
+        (comment) => comment.body === body || comment.body.includes(marker),
+      );
+      if (delivered !== undefined) {
+        await input.store.completeMutation(
+          idempotencyKey,
+          String(delivered.id),
+        );
+        return delivered.id;
+      }
     }
     const remoteCommentId = await input.gateway.postComment(
       input.job.taskId,
