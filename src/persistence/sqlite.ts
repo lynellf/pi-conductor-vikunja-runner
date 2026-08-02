@@ -562,9 +562,14 @@ export class SqliteJobStore implements JobStore {
     id: JobId,
     terminalErrorCode: TerminalErrorCode,
     intents: readonly NewRemoteMutationIntent[],
+    questionAbortReason = `job failed with ${terminalErrorCode}`,
   ): Promise<Job> {
     if (intents.length === 0) {
       throw new Error("terminal failure requires at least one mutation intent");
+    }
+    const boundedAbortReason = questionAbortReason.trim().slice(0, 2000);
+    if (boundedAbortReason === "") {
+      throw new Error("question abort reason is empty");
     }
     const current = this.getJobSync(id);
     if (!legalJobTransition(current.state, "failed")) {
@@ -579,11 +584,19 @@ export class SqliteJobStore implements JobStore {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       for (const intent of intents) this.recordMutationIntentSync(intent);
+      const timestamp = now();
+      this.database
+        .prepare(
+          `UPDATE questions
+           SET state = 'aborted', abort_reason = ?, updated_at = ?
+           WHERE job_id = ? AND state = 'pending'`,
+        )
+        .run(boundedAbortReason, timestamp, id);
       const result = this.database
         .prepare(
           "UPDATE jobs SET state = 'failed', terminal_error_code = ?, updated_at = ? WHERE id = ? AND state = ?",
         )
-        .run(terminalErrorCode, now(), id, current.state);
+        .run(terminalErrorCode, timestamp, id, current.state);
       if (result.changes !== 1)
         throw new Error(`job ${id} changed concurrently`);
       this.database.exec("COMMIT");

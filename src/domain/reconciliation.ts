@@ -169,10 +169,6 @@ export async function reconcileStartup(
     const layout = input.layouts.get(remoteTask.projectId);
     const question = questionsByJob.get(job.id);
     if (question !== undefined) {
-      await input.store.abortQuestion(
-        question.id,
-        "runner restarted while waiting for an answer",
-      );
       const sameActiveProject =
         layout !== undefined &&
         remoteTask.projectId === job.projectId &&
@@ -191,58 +187,106 @@ export async function reconcileStartup(
         sameActiveProject &&
         remoteTask.bucketId === layout.buckets.Running.id &&
         acceptedAnswerMove?.state === "succeeded";
-      const runnerOwnedInterruption = isWaiting || acceptedAnswerInterrupted;
+      // A question is persisted before its Running -> Waiting move. A restart
+      // in that window observes both local and remote Running state, but the
+      // pending question proves the interruption was created by the runner.
+      const preWaitingInterrupted =
+        job.state === "running" &&
+        sameActiveProject &&
+        remoteTask.bucketId === layout.buckets.Running.id;
+      const runnerOwnedInterruption =
+        isWaiting || acceptedAnswerInterrupted || preWaitingInterrupted;
       const terminalErrorCode = runnerOwnedInterruption
         ? "WAIT_INTERRUPTED"
         : "MANUAL_STATE_OVERRIDE";
-      await input.store.transition(job.id, {
-        state: "failed",
-        terminalErrorCode,
-      });
-      jobsFailed += 1;
+      const abortReason = "runner restarted while waiting for an answer";
       if (runnerOwnedInterruption) {
+        const expectedBucketId =
+          acceptedAnswerInterrupted || preWaitingInterrupted
+            ? layout.buckets.Running.id
+            : layout.buckets.Waiting.id;
+        const moveKey = `job:${job.id}:startup-wait-failed:move`;
+        const moveRequest = {
+          bucketId: layout.buckets.Failed.id,
+          expectedBucketId,
+        };
+        const commentKey = `job:${job.id}:startup-wait-failed:comment`;
+        const commentRequest = {
+          body: runnerComment(
+            commentKey,
+            `WAIT_INTERRUPTED: the daemon restarted while question ${question.id} was active. Move this task to Ready to retry.`,
+          ),
+        };
+        await input.store.recordTerminalFailure(
+          job.id,
+          terminalErrorCode,
+          [
+            {
+              jobId: job.id,
+              taskId: remoteTask.id,
+              operation: "move_task",
+              idempotencyKey: moveKey,
+              request: moveRequest,
+            },
+            {
+              jobId: job.id,
+              taskId: remoteTask.id,
+              operation: "post_comment",
+              idempotencyKey: commentKey,
+              request: commentRequest,
+            },
+          ],
+          abortReason,
+        );
+        jobsFailed += 1;
         questionsInterrupted += 1;
-        const expectedBucketId = acceptedAnswerInterrupted
-          ? layout.buckets.Running.id
-          : layout.buckets.Waiting.id;
         await deliverMutation(
           input,
           job.id,
           remoteTask.id,
           "move_task",
-          `job:${job.id}:startup-wait-failed:move`,
-          {
-            bucketId: layout.buckets.Failed.id,
-            expectedBucketId,
-          },
+          moveKey,
+          moveRequest,
         );
         await deliverMutation(
           input,
           job.id,
           remoteTask.id,
           "post_comment",
-          `job:${job.id}:startup-wait-failed:comment`,
-          {
-            body: runnerComment(
-              `job:${job.id}:startup-wait-failed:comment`,
-              `WAIT_INTERRUPTED: the daemon restarted while question ${question.id} was active. Move this task to Ready to retry.`,
-            ),
-          },
+          commentKey,
+          commentRequest,
         );
       } else {
+        const commentKey = `job:${job.id}:startup-manual-override:comment`;
+        const commentRequest = {
+          body: runnerComment(
+            commentKey,
+            `MANUAL_STATE_OVERRIDE: task state changed while question ${question.id} was pending; observed bucket ${remoteTask.bucketId}. The runner preserved the selected bucket.`,
+          ),
+        };
+        await input.store.recordTerminalFailure(
+          job.id,
+          terminalErrorCode,
+          [
+            {
+              jobId: job.id,
+              taskId: remoteTask.id,
+              operation: "post_comment",
+              idempotencyKey: commentKey,
+              request: commentRequest,
+            },
+          ],
+          abortReason,
+        );
+        jobsFailed += 1;
         manualOverrides += 1;
         await deliverMutation(
           input,
           job.id,
           remoteTask.id,
           "post_comment",
-          `job:${job.id}:startup-manual-override:comment`,
-          {
-            body: runnerComment(
-              `job:${job.id}:startup-manual-override:comment`,
-              `MANUAL_STATE_OVERRIDE: task state changed while question ${question.id} was pending; observed bucket ${remoteTask.bucketId}. The runner preserved the selected bucket.`,
-            ),
-          },
+          commentKey,
+          commentRequest,
         );
       }
       continue;
@@ -367,53 +411,85 @@ export async function reconcileStartup(
       // its question was resolved or aborted immediately before the crash,
       // the daemon cannot return that result to the original tool call after
       // restart, so fail safely rather than leaving the global slot stranded.
-      await input.store.transition(job.id, {
-        state: "failed",
-        terminalErrorCode: "WAIT_INTERRUPTED",
-      });
-      jobsFailed += 1;
       const stillWaiting =
         !remoteTask.done && remoteTask.bucketId === layout.buckets.Waiting.id;
       if (stillWaiting) {
+        const moveKey = `job:${job.id}:startup-wait-failed:move`;
+        const moveRequest = {
+          bucketId: layout.buckets.Failed.id,
+          expectedBucketId: layout.buckets.Waiting.id,
+        };
+        const commentKey = `job:${job.id}:startup-wait-failed:comment`;
+        const commentRequest = {
+          body: runnerComment(
+            commentKey,
+            "WAIT_INTERRUPTED: the daemon restarted after the live question dialog was interrupted. No answer was fabricated; move this task to Ready to retry.",
+          ),
+        };
+        await input.store.recordTerminalFailure(job.id, "WAIT_INTERRUPTED", [
+          {
+            jobId: job.id,
+            taskId: remoteTask.id,
+            operation: "move_task",
+            idempotencyKey: moveKey,
+            request: moveRequest,
+          },
+          {
+            jobId: job.id,
+            taskId: remoteTask.id,
+            operation: "post_comment",
+            idempotencyKey: commentKey,
+            request: commentRequest,
+          },
+        ]);
+        jobsFailed += 1;
         questionsInterrupted += 1;
         await deliverMutation(
           input,
           job.id,
           remoteTask.id,
           "move_task",
-          `job:${job.id}:startup-wait-failed:move`,
-          {
-            bucketId: layout.buckets.Failed.id,
-            expectedBucketId: layout.buckets.Waiting.id,
-          },
+          moveKey,
+          moveRequest,
         );
         await deliverMutation(
           input,
           job.id,
           remoteTask.id,
           "post_comment",
-          `job:${job.id}:startup-wait-failed:comment`,
-          {
-            body: runnerComment(
-              `job:${job.id}:startup-wait-failed:comment`,
-              "WAIT_INTERRUPTED: the daemon restarted after the live question dialog was interrupted. No answer was fabricated; move this task to Ready to retry.",
-            ),
-          },
+          commentKey,
+          commentRequest,
         );
       } else {
+        const commentKey = `job:${job.id}:startup-manual-override:comment`;
+        const commentRequest = {
+          body: runnerComment(
+            commentKey,
+            `MANUAL_STATE_OVERRIDE: the live question dialog was interrupted and bucket ${remoteTask.bucketId} was preserved.`,
+          ),
+        };
+        await input.store.recordTerminalFailure(
+          job.id,
+          "MANUAL_STATE_OVERRIDE",
+          [
+            {
+              jobId: job.id,
+              taskId: remoteTask.id,
+              operation: "post_comment",
+              idempotencyKey: commentKey,
+              request: commentRequest,
+            },
+          ],
+        );
+        jobsFailed += 1;
         manualOverrides += 1;
         await deliverMutation(
           input,
           job.id,
           remoteTask.id,
           "post_comment",
-          `job:${job.id}:startup-manual-override:comment`,
-          {
-            body: runnerComment(
-              `job:${job.id}:startup-manual-override:comment`,
-              `MANUAL_STATE_OVERRIDE: the live question dialog was interrupted and bucket ${remoteTask.bucketId} was preserved.`,
-            ),
-          },
+          commentKey,
+          commentRequest,
         );
       }
       continue;

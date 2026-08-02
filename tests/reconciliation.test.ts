@@ -269,6 +269,127 @@ describe("reconcileStartup", () => {
     });
   });
 
+  it("treats a pre-Waiting question in Running as a runner-owned interruption", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    const question = await store.createQuestion({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      kind: "input",
+      prompt: "Which approach?",
+      commentWatermark: null,
+    });
+    let remote = task(3);
+    const moves: number[] = [];
+    const comments: string[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => remote,
+      moveTask: async (_taskId, bucket) => {
+        moves.push(bucket);
+        remote = { ...remote, bucketId: bucket };
+      },
+      listComments: async () => [],
+      postComment: async (_taskId, body) => {
+        comments.push(body);
+        return commentId(249);
+      },
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({
+      jobsFailed: 1,
+      questionsInterrupted: 1,
+      manualOverrides: 0,
+    });
+    expect(await store.getJob(claimed.id)).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "WAIT_INTERRUPTED",
+    });
+    expect(await store.getQuestion(question.id)).toMatchObject({
+      state: "aborted",
+    });
+    expect(moves).toEqual([layout().buckets.Failed.id]);
+    expect(comments[0]).toContain("WAIT_INTERRUPTED");
+  });
+
+  it("atomically persists question interruption compensation before delivery", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    const question = await store.createQuestion({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      kind: "input",
+      prompt: "Which approach?",
+      commentWatermark: null,
+    });
+    const originalRecordTerminalFailure =
+      store.recordTerminalFailure.bind(store);
+    store.recordTerminalFailure = async (id, code, intents, abortReason) => {
+      const failed = await originalRecordTerminalFailure(
+        id,
+        code,
+        intents,
+        abortReason,
+      );
+      throw new Error(`simulated exit after ${failed.state} commit`);
+    };
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(3),
+      moveTask: async () => {
+        throw new Error("delivery must occur after the atomic commit");
+      },
+      listComments: async () => [],
+      postComment: async () => {
+        throw new Error("delivery must occur after the atomic commit");
+      },
+    };
+
+    await expect(
+      reconcileStartup({
+        store,
+        gateway,
+        layouts: new Map([[projectId(42), layout()]]),
+      }),
+    ).rejects.toThrow("simulated exit after failed commit");
+
+    expect(await store.getJob(claimed.id)).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "WAIT_INTERRUPTED",
+    });
+    expect(await store.getQuestion(question.id)).toMatchObject({
+      state: "aborted",
+      abortReason: "runner restarted while waiting for an answer",
+    });
+    expect(
+      await store.getMutationIntent(
+        `job:${claimed.id}:startup-wait-failed:move`,
+      ),
+    ).toMatchObject({
+      state: "pending",
+      request: { bucketId: 6, expectedBucketId: 3 },
+    });
+    expect(
+      await store.getMutationIntent(
+        `job:${claimed.id}:startup-wait-failed:comment`,
+      ),
+    ).toMatchObject({ state: "pending" });
+  });
+
   it("fails an unresolved waiting question safely and records one failure comment", async () => {
     const store = await openStore();
     const claimed = await store.tryClaim(task(2));
@@ -674,6 +795,64 @@ describe("reconcileStartup", () => {
     expect(moves).toEqual([6]);
     expect(comments).toHaveLength(1);
     expect(comments[0]).toContain("WAIT_INTERRUPTED");
+  });
+
+  it("atomically persists stranded Waiting compensation before delivery", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    await store.transition(claimed.id, { state: "waiting" });
+    const originalRecordTerminalFailure =
+      store.recordTerminalFailure.bind(store);
+    store.recordTerminalFailure = async (id, code, intents, abortReason) => {
+      const failed = await originalRecordTerminalFailure(
+        id,
+        code,
+        intents,
+        abortReason,
+      );
+      throw new Error(`simulated exit after ${failed.state} commit`);
+    };
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(4),
+      moveTask: async () => {
+        throw new Error("delivery must occur after the atomic commit");
+      },
+      listComments: async () => [],
+      postComment: async () => {
+        throw new Error("delivery must occur after the atomic commit");
+      },
+    };
+
+    await expect(
+      reconcileStartup({
+        store,
+        gateway,
+        layouts: new Map([[projectId(42), layout()]]),
+      }),
+    ).rejects.toThrow("simulated exit after failed commit");
+
+    expect(await store.getJob(claimed.id)).toMatchObject({
+      state: "failed",
+      terminalErrorCode: "WAIT_INTERRUPTED",
+    });
+    expect(
+      await store.getMutationIntent(
+        `job:${claimed.id}:startup-wait-failed:move`,
+      ),
+    ).toMatchObject({
+      state: "pending",
+      request: { bucketId: 6, expectedBucketId: 4 },
+    });
+    expect(
+      await store.getMutationIntent(
+        `job:${claimed.id}:startup-wait-failed:comment`,
+      ),
+    ).toMatchObject({ state: "pending" });
   });
 
   it("terminates an interrupted claiming job without leaving an active slot", async () => {

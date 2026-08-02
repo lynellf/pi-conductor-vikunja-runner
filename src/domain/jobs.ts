@@ -66,6 +66,7 @@ export interface JobStore extends DaemonHeartbeatStore {
     jobId: JobId,
     terminalErrorCode: TerminalErrorCode,
     intents: readonly NewRemoteMutationIntent[],
+    questionAbortReason?: string,
   ): Promise<Job>;
   recoverableJobs(): Promise<readonly Job[]>;
   pendingQuestions(): Promise<readonly Question[]>;
