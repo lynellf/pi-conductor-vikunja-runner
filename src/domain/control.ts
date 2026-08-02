@@ -91,17 +91,12 @@ const postMilestone = async (
   if (milestone.commentId !== null || milestone.deliveryState === "delivered") {
     return;
   }
-  try {
-    const remoteCommentId = await postIdempotentComment(
-      input,
-      idempotencyKey,
-      body,
-    );
-    await input.store.recordMilestoneComment(milestone.id, remoteCommentId);
-  } catch (error) {
-    await input.store.failMilestone(milestone.id, String(error));
-    throw error;
-  }
+  const remoteCommentId = await postIdempotentComment(
+    input,
+    idempotencyKey,
+    body,
+  );
+  await input.store.recordMilestoneComment(milestone.id, remoteCommentId);
 };
 
 const acknowledge = (

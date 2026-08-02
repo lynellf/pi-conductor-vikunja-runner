@@ -78,12 +78,29 @@ const makeDeps = () => {
       remoteId: ReturnType<typeof commentId>,
     ) {
       for (const [key, milestone] of milestones) {
-        if (milestone.id === id)
+        if (milestone.id !== id) continue;
+        if (milestone.deliveryState !== "pending") {
+          throw new Error(`milestone ${id} is no longer pending`);
+        }
+        milestones.set(key, {
+          ...milestone,
+          commentId: remoteId,
+          deliveryState: "delivered",
+        });
+      }
+      return [...milestones.values()].find(
+        (milestone) => milestone.id === id,
+      ) as Milestone;
+    },
+    async failMilestone(id: Milestone["id"], error: string) {
+      for (const [key, milestone] of milestones) {
+        if (milestone.id === id) {
           milestones.set(key, {
             ...milestone,
-            commentId: remoteId,
-            deliveryState: "delivered",
+            deliveryState: "failed",
+            error,
           });
+        }
       }
       return [...milestones.values()].find(
         (milestone) => milestone.id === id,
@@ -141,6 +158,42 @@ describe("executePiComment", () => {
     expect(deps.comments[0]).toContain(
       "idempotency:job:job-1:comment:20:steer",
     );
+  });
+
+  it("keeps a failed steering acknowledgement retryable", async () => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    let attempts = 0;
+    const input = {
+      job,
+      commentId: commentId(25),
+      action: { kind: "steer", message: "retry acknowledgement" } as const,
+      handle: handle(calls),
+      store: deps.store,
+      gateway: {
+        async postComment(_taskId: ReturnType<typeof taskId>, body: string) {
+          attempts += 1;
+          if (attempts === 1) throw new Error("temporary comment failure");
+          deps.comments.push(body);
+          return commentId(103);
+        },
+      },
+    };
+
+    await expect(executePiComment(input)).rejects.toThrow(
+      "temporary comment failure",
+    );
+    expect([...deps.milestones.values()][0]?.deliveryState).toBe("pending");
+
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+    expect(calls).toEqual(["steer:retry acknowledgement"]);
+    expect(attempts).toBe(2);
+    expect([...deps.milestones.values()][0]).toMatchObject({
+      deliveryState: "delivered",
+      commentId: commentId(103),
+    });
   });
 
   it("aborts while waiting and includes the owner reason in one acknowledgement", async () => {
