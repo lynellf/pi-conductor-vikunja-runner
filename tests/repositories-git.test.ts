@@ -183,6 +183,41 @@ describe("GitRepositoryManager", () => {
     ]);
   });
 
+  it("does not fail a successful verification command with output over 1 MiB", async () => {
+    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    roots.push(dataDir);
+    const fakeGit = {
+      async run(): Promise<string> {
+        return "";
+      },
+    };
+    const manager = new GitRepositoryManager(dataDir, fakeGit);
+    const worktree = join(dataDir, "jobs", "12", "worktree");
+    await mkdir(worktree, { recursive: true });
+
+    const result = await manager.verify(
+      {
+        repository: join(dataDir, "repositories", "42", "repo"),
+        branch: "pi/vikunja-12-check",
+        worktree,
+      },
+      [
+        [
+          process.execPath,
+          "-e",
+          "process.stdout.write('x'.repeat(1024 * 1024 + 1))",
+        ],
+      ],
+    );
+
+    expect(result.passed).toBe(true);
+    expect(result.commands[0]).toMatchObject({
+      exitCode: 0,
+      passed: true,
+    });
+    expect(result.commands[0]?.outputTail).toBe("x".repeat(4000));
+  });
+
   it("reports every uncommitted worktree path from Git status", async () => {
     const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
     roots.push(dataDir);

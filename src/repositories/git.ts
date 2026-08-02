@@ -1,4 +1,4 @@
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { access, mkdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -8,26 +8,45 @@ import type { Job } from "../domain/jobs.js";
 
 const execFile = promisify(execFileCallback);
 
+const PROCESS_OUTPUT_TAIL_CHARS = 4000;
+
+const appendOutputTail = (current: string, chunk: string): string =>
+  `${current}${chunk}`.slice(-PROCESS_OUTPUT_TAIL_CHARS);
+
 const runProcess: ProcessCommandRunner = {
-  async run(command, args, cwd) {
-    try {
-      const result = await execFile(command, [...args], {
+  run(command, args, cwd) {
+    return new Promise((resolveResult) => {
+      const child = spawn(command, [...args], {
         cwd,
-        maxBuffer: 1024 * 1024,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
       });
-      return { exitCode: 0, stdout: result.stdout, stderr: result.stderr };
-    } catch (error: unknown) {
-      const failure = error as {
-        code?: number | string;
-        stdout?: string;
-        stderr?: string;
-      };
-      return {
-        exitCode: typeof failure.code === "number" ? failure.code : 1,
-        stdout: failure.stdout ?? "",
-        stderr: failure.stderr ?? String(error),
-      };
-    }
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        stdout = appendOutputTail(stdout, chunk);
+      });
+      child.stderr.on("data", (chunk: string) => {
+        stderr = appendOutputTail(stderr, chunk);
+      });
+      child.once("error", (error) => {
+        if (settled) return;
+        settled = true;
+        resolveResult({
+          exitCode: 1,
+          stdout,
+          stderr: appendOutputTail(stderr, String(error)),
+        });
+      });
+      child.once("close", (code) => {
+        if (settled) return;
+        settled = true;
+        resolveResult({ exitCode: code ?? 1, stdout, stderr });
+      });
+    });
   },
 };
 
