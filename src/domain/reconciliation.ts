@@ -68,27 +68,42 @@ export async function reconcileStartup(
       // Review) and could resurrect or overwrite the failed task on restart.
       // Mark it terminal without touching Vikunja; the explicit failure move
       // remains eligible for guarded replay.
-      if (intent.operation === "move_task" && intent.jobId !== null) {
+      if (intent.jobId !== null) {
         const job = await input.store.getJob(intent.jobId);
         if (job?.state === "failed") {
-          const layout = input.layouts.get(job.projectId);
-          const request =
-            typeof intent.request === "object" &&
-            intent.request !== null &&
-            !Array.isArray(intent.request)
-              ? (intent.request as ReconciliationRequest)
-              : null;
-          const targetBucket = request === null ? undefined : request.bucketId;
+          const reviewCommentKey = `job:${job.id}:completion:review-comment`;
           if (
-            layout === undefined ||
-            targetBucket !== layout.buckets.Failed.id
+            intent.operation === "post_comment" &&
+            intent.idempotencyKey === reviewCommentKey
           ) {
             await input.store.failMutation(
               intent.idempotencyKey,
-              "move belongs to a terminally failed job",
+              "review report belongs to a terminally failed job",
             );
             mutationFailures += 1;
             continue;
+          }
+          if (intent.operation === "move_task") {
+            const layout = input.layouts.get(job.projectId);
+            const request =
+              typeof intent.request === "object" &&
+              intent.request !== null &&
+              !Array.isArray(intent.request)
+                ? (intent.request as ReconciliationRequest)
+                : null;
+            const targetBucket =
+              request === null ? undefined : request.bucketId;
+            if (
+              layout === undefined ||
+              targetBucket !== layout.buckets.Failed.id
+            ) {
+              await input.store.failMutation(
+                intent.idempotencyKey,
+                "move belongs to a terminally failed job",
+              );
+              mutationFailures += 1;
+              continue;
+            }
           }
         }
       }
@@ -223,6 +238,26 @@ export async function reconcileStartup(
         },
       );
       continue;
+    }
+
+    if (
+      job.state === "running" &&
+      !remoteTask.done &&
+      remoteTask.bucketId === layout.buckets.Review.id
+    ) {
+      const reviewComment = await input.store.getMutationIntent(
+        `job:${job.id}:completion:review-comment`,
+      );
+      const reviewMove = await input.store.getMutationIntent(
+        `job:${job.id}:completion:move-review`,
+      );
+      if (
+        reviewComment?.state === "succeeded" &&
+        reviewMove?.state === "succeeded"
+      ) {
+        await input.store.transition(job.id, { state: "review" });
+        continue;
+      }
     }
 
     if (job.state === "claiming") {

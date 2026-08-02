@@ -470,21 +470,6 @@ export const completeConductorJob = async (
     );
   }
 
-  const moveKey = `job:${input.job.id}:completion:move-review`;
-  try {
-    await mutation(input, "move_task", moveKey, {
-      bucketId: input.layout.buckets.Review.id,
-      expectedBucketId: input.layout.buckets.Running.id,
-    });
-  } catch (error) {
-    return failCompletedJob(
-      input,
-      "VIKUNJA_UNAVAILABLE",
-      "the completed task could not be moved to Review",
-      error,
-    );
-  }
-
   const commentKey = `job:${input.job.id}:completion:review-comment`;
   const maxCommentChars = input.maxCommentChars ?? 12000;
   const publishDetail = publish.pushed
@@ -515,10 +500,33 @@ export const completeConductorJob = async (
       body: truncateComment(report, maxCommentChars),
     });
   } catch (error) {
+    try {
+      await input.store.failMutation(
+        commentKey,
+        "review report delivery failed before the Review transition",
+      );
+    } catch {
+      // The terminal failure path remains authoritative if intent finalization races.
+    }
     return failCompletedJob(
       input,
       "VIKUNJA_UNAVAILABLE",
       "the final Review report could not be posted",
+      error,
+    );
+  }
+
+  const moveKey = `job:${input.job.id}:completion:move-review`;
+  try {
+    await mutation(input, "move_task", moveKey, {
+      bucketId: input.layout.buckets.Review.id,
+      expectedBucketId: input.layout.buckets.Running.id,
+    });
+  } catch (error) {
+    return failCompletedJob(
+      input,
+      "VIKUNJA_UNAVAILABLE",
+      "the completed task could not be moved to Review",
       error,
     );
   }

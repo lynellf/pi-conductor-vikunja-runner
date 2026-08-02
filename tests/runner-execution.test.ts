@@ -249,8 +249,8 @@ describe("executeClaimedJob", () => {
       "completion",
       "verify",
       "publish",
-      "move:5",
       "review-comment",
+      "move:5",
       "transition:review",
     ]);
   });

@@ -226,8 +226,8 @@ describe("completeConductorJob", () => {
       "completion",
       "verify",
       "publish",
-      "move:5",
       "comment:true",
+      "move:5",
       "transition:review",
     ]);
     expect(dependencies.reportBody).toContain("Latest commit: abc123def456");
@@ -524,7 +524,7 @@ describe("completeConductorJob", () => {
     ]);
   });
 
-  it("preserves Review when the final report fails after the terminal move", async () => {
+  it("fails without exposing Review when the final report cannot be posted", async () => {
     const dependencies = makeInput();
     let remoteBucket = layout.buckets.Running.id;
     dependencies.input.gateway = {
@@ -558,18 +558,21 @@ describe("completeConductorJob", () => {
       "completion",
       "verify",
       "publish",
-      "move:5",
       "transition:failed",
+      "move:6",
     ]);
-    expect(remoteBucket).toBe(layout.buckets.Review.id);
+    expect(remoteBucket).toBe(layout.buckets.Failed.id);
     expect(
       dependencies.mutations.get(
         "job:job-1:completion:move-failed:vikunja_unavailable",
       ),
-    ).toMatchObject({ state: "failed" });
+    ).toMatchObject({ state: "succeeded" });
     expect(
       dependencies.mutations.get("job:job-1:completion:review-comment"),
-    ).toMatchObject({ state: "pending" });
+    ).toMatchObject({ state: "failed" });
+    expect(dependencies.mutations.get("job:job-1:completion:move-review")).toBe(
+      undefined,
+    );
   });
 
   it("uses PUBLISH_FAILED when the configured push fails", async () => {

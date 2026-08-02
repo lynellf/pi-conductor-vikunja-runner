@@ -752,6 +752,106 @@ describe("reconcileStartup", () => {
     );
   });
 
+  it("finalizes a runner-owned Review transition after a restart", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    const commentKey = `job:${claimed.id}:completion:review-comment`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "post_comment",
+      idempotencyKey: commentKey,
+      request: { body: "Review ready." },
+    });
+    await store.completeMutation(commentKey, String(commentId(700)));
+    const moveKey = `job:${claimed.id}:completion:move-review`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "move_task",
+      idempotencyKey: moveKey,
+      request: { bucketId: 5, expectedBucketId: 3 },
+    });
+    const moves: number[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(5),
+      moveTask: async (_taskId, bucket) => moves.push(bucket),
+      assignRunner: async () => undefined,
+      listComments: async () => [],
+      postComment: async () => commentId(701),
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({
+      jobsFailed: 0,
+      manualOverrides: 0,
+      mutationsReplayed: 1,
+    });
+    expect(moves).toEqual([]);
+    expect(await store.getMutationIntent(moveKey)).toMatchObject({
+      state: "succeeded",
+    });
+    expect(await store.getJob(claimed.id)).toMatchObject({ state: "review" });
+  });
+
+  it("suppresses a pending Review report after its job has failed", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    await store.transition(claimed.id, {
+      state: "failed",
+      terminalErrorCode: "VIKUNJA_UNAVAILABLE",
+    });
+    const commentKey = `job:${claimed.id}:completion:review-comment`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "post_comment",
+      idempotencyKey: commentKey,
+      request: { body: "Review ready." },
+    });
+    let posts = 0;
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(3),
+      moveTask: async () => undefined,
+      assignRunner: async () => undefined,
+      listComments: async () => [],
+      postComment: async () => {
+        posts += 1;
+        return commentId(702);
+      },
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({
+      mutationsReplayed: 0,
+      mutationFailures: 1,
+    });
+    expect(posts).toBe(0);
+    expect(await store.getMutationIntent(commentKey)).toMatchObject({
+      state: "failed",
+    });
+  });
+
   it("suppresses a stale Review move after a job has failed", async () => {
     const store = await openStore();
     const claimed = await store.tryClaim(task(2));
