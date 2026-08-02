@@ -389,6 +389,30 @@ export interface ReportTerminalJobFailureInput {
   readonly maxCommentChars?: number;
 }
 
+export interface RecordTerminalJobFailureInput
+  extends Omit<ReportTerminalJobFailureInput, "gateway"> {
+  readonly terminalErrorCode: TerminalErrorCode;
+}
+
+/** Atomically make a job terminal and persist its guarded remote actions. */
+export const recordTerminalJobFailure = async (
+  input: RecordTerminalJobFailureInput,
+): Promise<Job> =>
+  input.store.recordTerminalFailure(
+    input.job.id,
+    input.terminalErrorCode,
+    terminalFailureActions({
+      job: input.job,
+      layout: input.layout,
+      expectedBucketId: input.expectedBucketId,
+      terminalErrorCode: input.terminalErrorCode,
+      detail: input.detail,
+      ...(input.maxCommentChars === undefined
+        ? {}
+        : { maxCommentChars: input.maxCommentChars }),
+    }),
+  );
+
 /**
  * Synchronize a locally failed start/resume job with Vikunja. The expected
  * bucket guard prevents a delayed retry from overwriting an owner-selected

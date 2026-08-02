@@ -7,6 +7,7 @@ import {
   type ExecuteClaimedJobInput,
   type ExecuteClaimedJobResult,
   executeClaimedJob,
+  recordTerminalJobFailure,
   reportTerminalJobFailure,
 } from "./orchestration.js";
 import {
@@ -121,27 +122,30 @@ const runPollCycleWithoutHeartbeat = async (
     detail: string,
     cause: unknown,
   ): Promise<never> => {
-    const failed = await input.store.transition(job.id, {
-      state: "failed",
+    const pollingLayout = poll.claimLayout;
+    if (pollingLayout === undefined) throw cause;
+    const failureInput = {
+      job,
+      layout: pollingLayout,
+      store: input.store,
+      expectedBucketId: pollingLayout.buckets.Running.id,
+      detail,
+      ...(input.maxCommentChars === undefined
+        ? {}
+        : { maxCommentChars: input.maxCommentChars }),
+    };
+    const failed = await recordTerminalJobFailure({
+      ...failureInput,
       terminalErrorCode: code,
     });
-    const pollingLayout = poll.claimLayout;
-    if (pollingLayout !== undefined) {
-      try {
-        await reportTerminalJobFailure({
-          job: failed,
-          layout: pollingLayout,
-          store: input.store,
-          gateway: input.gateway,
-          expectedBucketId: pollingLayout.buckets.Running.id,
-          detail,
-          ...(input.maxCommentChars === undefined
-            ? {}
-            : { maxCommentChars: input.maxCommentChars }),
-        });
-      } catch {
-        // Durable reporting intents are retried during startup reconciliation.
-      }
+    try {
+      await reportTerminalJobFailure({
+        ...failureInput,
+        job: failed,
+        gateway: input.gateway,
+      });
+    } catch {
+      // Durable reporting intents are retried during startup reconciliation.
     }
     throw cause;
   };

@@ -81,6 +81,12 @@ const dependencies = (ready = true) => {
     recoverableJobs: vi.fn(async () => []),
     tryClaim: vi.fn(async () => (ready ? job : null)),
     transition: vi.fn(async () => claimed),
+    recordTerminalFailure: vi.fn(
+      async (
+        _id: Job["id"],
+        terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,
+      ) => ({ ...claimed, state: "failed" as const, terminalErrorCode }),
+    ),
     getTask,
     recordMutationIntent: vi.fn(async (input: { idempotencyKey: string }) => ({
       id: "mutation-1",
@@ -168,12 +174,6 @@ describe("runPollCycle", () => {
       .mockResolvedValueOnce(task)
       .mockRejectedValueOnce(new Error("Vikunja unavailable"))
       .mockRejectedValueOnce(new Error("Vikunja unavailable"));
-    vi.mocked(store.transition).mockImplementation(async (_id, transition) => ({
-      ...job,
-      state: transition.state,
-      terminalErrorCode:
-        transition.state === "failed" ? transition.terminalErrorCode : null,
-    }));
     const execute = vi.fn();
 
     await expect(
@@ -190,10 +190,23 @@ describe("runPollCycle", () => {
       }),
     ).rejects.toThrow("Vikunja unavailable");
 
-    expect(store.transition).toHaveBeenLastCalledWith(job.id, {
-      state: "failed",
-      terminalErrorCode: "VIKUNJA_UNAVAILABLE",
-    });
+    expect(store.recordTerminalFailure).toHaveBeenCalledWith(
+      job.id,
+      "VIKUNJA_UNAVAILABLE",
+      expect.arrayContaining([
+        expect.objectContaining({
+          operation: "move_task",
+          request: { bucketId: 6, expectedBucketId: 3 },
+        }),
+        expect.objectContaining({
+          operation: "post_comment",
+          request: expect.objectContaining({
+            body: expect.stringContaining("VIKUNJA_UNAVAILABLE"),
+          }),
+        }),
+      ]),
+    );
+    expect(store.transition).toHaveBeenCalledTimes(1);
     expect(gateway.postComment).toHaveBeenCalledWith(
       task.id,
       expect.stringContaining("VIKUNJA_UNAVAILABLE"),
