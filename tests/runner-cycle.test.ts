@@ -127,6 +127,7 @@ const dependencies = (ready = true) => {
       updatedAt: "",
     })),
     recordMilestoneComment: vi.fn(async () => undefined),
+    recordCommentWatermark: vi.fn(async () => undefined),
   } as unknown as JobStore;
   const gateway = {
     validateProjectLayout,
@@ -270,6 +271,46 @@ describe("runPollCycle", () => {
       task.id,
       expect.stringContaining("VIKUNJA_UNAVAILABLE"),
     );
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not claim a task after shutdown begins during polling", async () => {
+    const { store, gateway } = dependencies();
+    const controller = new AbortController();
+    let finishListing: ((tasks: CodingTask[]) => void) | undefined;
+    let listingStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      listingStarted = resolve;
+    });
+    gateway.listReadyTasks = vi.fn(
+      () =>
+        new Promise<CodingTask[]>((resolve) => {
+          finishListing = resolve;
+          listingStarted?.();
+        }),
+    );
+    const execute = vi.fn();
+    const pending = runPollCycle({
+      projects: { "42": project },
+      store,
+      gateway,
+      ownerUserId: 1 as never,
+      runnerUserId: 2 as never,
+      repository: noopRepository,
+      conductor: noopConductor as never,
+      uiForJob: () => noopUi,
+      execute,
+      signal: controller.signal,
+    });
+
+    await started;
+    controller.abort();
+    finishListing?.([task]);
+    const report = await pending;
+
+    expect(report.poll.claim).toBeNull();
+    expect(store.tryClaim).not.toHaveBeenCalled();
+    expect(gateway.moveTask).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });
 

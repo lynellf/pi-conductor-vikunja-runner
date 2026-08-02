@@ -822,11 +822,16 @@ export const startClaimedJob = async (
   let handle: ConductorHandle | undefined;
   try {
     const comments = await input.gateway.listComments(input.task.id, null);
-    const initialCommentId = comments.reduce<CommentId | null>(
+    const claimCommentId = await input.store.getCommentWatermark(input.task.id);
+    const latestCommentId = comments.reduce<CommentId | null>(
       (latest, comment) =>
         latest === null || comment.id > latest ? comment.id : latest,
       null,
     );
+    // A normal claim persists its milestone as the monitor boundary. Keep that
+    // boundary even when newer owner commands are included in the goal, so the
+    // monitor still dispatches commands posted during repository preparation.
+    const initialCommentId = claimCommentId ?? latestCommentId;
     const goal = buildConductorGoal({
       task: input.task,
       project: input.project,
@@ -841,10 +846,9 @@ export const startClaimedJob = async (
         ? {}
         : { includeRunnerComments: input.includeRunnerComments }),
     });
-    // Persist the exact goal snapshot before conductor startup. Recovery can
-    // then process owner commands posted after this cursor instead of treating
-    // every comment observed after a crash as historical.
-    if (initialCommentId !== null) {
+    // Preserve backwards compatibility for directly embedded starts that did
+    // not pass through claimReadyTask and therefore have no durable boundary.
+    if (claimCommentId === null && initialCommentId !== null) {
       await input.store.recordCommentWatermark(input.task.id, initialCommentId);
     }
     handle = await input.conductor.start(preparedJob, goal, input.ui);

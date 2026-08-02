@@ -5,8 +5,10 @@ import type { ProjectLayout } from "../src/domain/types.js";
 import {
   bucketId,
   type CodingTask,
+  commentId,
   projectId,
   taskId,
+  userId,
 } from "../src/domain/types.js";
 import type { VikunjaGateway } from "../src/vikunja/gateway.js";
 
@@ -65,7 +67,12 @@ const makeStore = (
     JobStore["recordMutationIntent"]
   >[0][] = [];
   const mutationCalls: string[] = [];
+  const completedMutationCalls: Array<{
+    key: string;
+    remoteId: string | null;
+  }> = [];
   const failedMutationCalls: string[] = [];
+  const watermarks: number[] = [];
   const milestones = new Map<
     string,
     { id: string; commentId: null | ReturnType<typeof taskId> }
@@ -73,8 +80,10 @@ const makeStore = (
   const store = {
     transitions,
     mutationCalls,
+    completedMutationCalls,
     failedMutationCalls,
     terminalFailureIntents,
+    watermarks,
     async tryClaim() {
       return remoteJob;
     },
@@ -113,7 +122,8 @@ const makeStore = (
         updatedAt: "",
       };
     },
-    async completeMutation() {
+    async completeMutation(key: string, remoteId: string | null) {
+      completedMutationCalls.push({ key, remoteId });
       return {} as never;
     },
     async failMutation(idempotencyKey: string) {
@@ -133,6 +143,9 @@ const makeStore = (
     },
     async recordMilestoneComment() {
       return {} as never;
+    },
+    async recordCommentWatermark(_taskId: unknown, id: number) {
+      watermarks.push(id);
     },
   } as unknown as JobStore;
   return store;
@@ -187,6 +200,44 @@ describe("claimReadyTask", () => {
     expect(gateway.comments).toEqual([
       "[pi-runner][idempotency:job:job-1:claim:comment] Claimed task 12.\nJob: job-1\nBranch: pi/vikunja-12-fix-api-auth",
     ]);
+    expect(store.watermarks).toEqual([100]);
+  });
+
+  it("reconciles an ambiguously delivered claim comment without failing the claim", async () => {
+    const store = makeStore();
+    let deliveredBody = "";
+    const gateway = {
+      async getTask() {
+        return task;
+      },
+      async moveTask() {},
+      async assignRunner() {},
+      async postComment(_taskId: unknown, body: string) {
+        deliveredBody = body;
+        throw new Error("response lost after comment creation");
+      },
+      async listComments() {
+        return [
+          {
+            id: commentId(104),
+            taskId: task.id,
+            authorId: userId(2),
+            body: `[normalized] ${deliveredBody.match(/\[idempotency:[^\]]+\]/)?.[0] ?? ""}`,
+            createdAt: "2026-08-02T00:01:00.000Z",
+          },
+        ];
+      },
+    } as unknown as VikunjaGateway;
+
+    const result = await claimReadyTask({ task, layout, store, gateway });
+
+    expect(result.status).toBe("claimed");
+    expect(store.transitions).toEqual([{ state: "running" }]);
+    expect(store.completedMutationCalls).toContainEqual({
+      key: "job:job-1:claim:comment",
+      remoteId: "104",
+    });
+    expect(store.watermarks).toEqual([104]);
   });
 
   it("surfaces a remote claim failure as one durable failure milestone", async () => {

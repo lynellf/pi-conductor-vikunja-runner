@@ -13,7 +13,8 @@ export interface ClaimTaskInput {
   readonly gateway: Pick<
     VikunjaGateway,
     "getTask" | "moveTask" | "assignRunner" | "postComment"
-  >;
+  > &
+    Partial<Pick<VikunjaGateway, "listComments">>;
   readonly maxCommentChars?: number;
 }
 
@@ -74,7 +75,26 @@ const deliverMutation = async (
     const body = mutationRequest.body;
     if (typeof body !== "string")
       throw new Error("comment mutation has no body");
-    remoteId = String(await gateway.postComment(taskId, body));
+    try {
+      remoteId = String(await gateway.postComment(taskId, body));
+    } catch (error) {
+      // A lost response can hide an accepted comment. Reconcile the stable
+      // marker before treating an otherwise successful claim as failed.
+      if (gateway.listComments === undefined) throw error;
+      let deliveredId: string | null = null;
+      try {
+        const comments = await gateway.listComments(taskId, null);
+        const marker = `[idempotency:${idempotencyKey}]`;
+        const delivered = comments.find(
+          (comment) => comment.body === body || comment.body.includes(marker),
+        );
+        if (delivered !== undefined) deliveredId = String(delivered.id);
+      } catch {
+        throw error;
+      }
+      if (deliveredId === null) throw error;
+      remoteId = deliveredId;
+    }
   } else {
     throw new Error(`unsupported claim mutation: ${operation}`);
   }
@@ -88,14 +108,14 @@ const deliverCommentMilestone = async (
   type: "claimed" | "failure",
   idempotencyKey: string,
   body: string,
-): Promise<void> => {
+): Promise<ReturnType<typeof commentId> | null> => {
   const milestone = await input.store.recordMilestone({
     jobId: job.id,
     type,
     idempotencyKey,
   });
   if (milestone.deliveryState === "delivered" || milestone.commentId !== null) {
-    return;
+    return milestone.commentId;
   }
   const remoteCommentId = await deliverMutation(
     input.store,
@@ -109,10 +129,9 @@ const deliverCommentMilestone = async (
   if (remoteCommentId === null) {
     throw new Error("comment mutation did not return a remote comment ID");
   }
-  await input.store.recordMilestoneComment(
-    milestone.id,
-    commentId(Number(remoteCommentId)),
-  );
+  const deliveredCommentId = commentId(Number(remoteCommentId));
+  await input.store.recordMilestoneComment(milestone.id, deliveredCommentId);
+  return deliveredCommentId;
 };
 
 const failClaim = async (
@@ -241,13 +260,19 @@ const deliverStartMilestone = async (
 ): Promise<void> => {
   const idempotencyKey = `job:${job.id}:claim:comment`;
   const branch = job.branch ?? taskBranchName(job.taskId, input.task.title);
-  await deliverCommentMilestone(
+  const claimedCommentId = await deliverCommentMilestone(
     input,
     job,
     "claimed",
     idempotencyKey,
     `[pi-runner][idempotency:${idempotencyKey}] Claimed task ${job.taskId}.\nJob: ${job.id}\nBranch: ${branch}`,
   );
+  // The claimed milestone is the control-command boundary. Persisting its
+  // exact ID ensures owner commands posted during repository preparation are
+  // still observed by the live monitor.
+  if (claimedCommentId !== null) {
+    await input.store.recordCommentWatermark(job.taskId, claimedCommentId);
+  }
 };
 
 const reportClaimConflict = async (

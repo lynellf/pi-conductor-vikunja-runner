@@ -78,7 +78,30 @@ const deliverMutation = async (
   if (intent.state === "failed") {
     throw new Error(intent.error ?? `mutation ${idempotencyKey} failed`);
   }
-  const remoteId = await deliver();
+  let remoteId: string | null;
+  try {
+    remoteId = await deliver();
+  } catch (error) {
+    if (operation !== "post_comment") throw error;
+    const body = request.body;
+    if (typeof body !== "string") throw error;
+    let deliveredCommentId: string | null = null;
+    try {
+      const comments = await options.gateway.listComments(
+        options.job.taskId,
+        null,
+      );
+      const marker = `[idempotency:${idempotencyKey}]`;
+      const delivered = comments.find(
+        (comment) => comment.body === body || comment.body.includes(marker),
+      );
+      if (delivered !== undefined) deliveredCommentId = String(delivered.id);
+    } catch {
+      throw error;
+    }
+    if (deliveredCommentId === null) throw error;
+    remoteId = deliveredCommentId;
+  }
   await options.store.completeMutation(idempotencyKey, remoteId);
   return remoteId;
 };

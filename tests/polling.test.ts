@@ -122,6 +122,7 @@ const makeDependencies = (readyTasks: readonly CodingTask[]) => {
     async recordMilestoneComment() {
       return {};
     },
+    async recordCommentWatermark() {},
   } as unknown as JobStore;
   const gateway = {
     async validateProjectLayout() {

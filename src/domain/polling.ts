@@ -10,6 +10,8 @@ export interface PollCycleInput {
   readonly store: JobStore;
   readonly gateway: VikunjaGateway;
   readonly maxCommentChars?: number;
+  /** Prevent a new claim when daemon shutdown begins during remote polling. */
+  readonly signal?: AbortSignal;
 }
 
 export interface PollCycleReport {
@@ -54,7 +56,7 @@ export const pollOnce = async (
       ? undefined
       : projects.find((project) => project.id === task.projectId);
   const claim =
-    task === undefined
+    task === undefined || input.signal?.aborted
       ? null
       : await claimReadyTask({
           task,

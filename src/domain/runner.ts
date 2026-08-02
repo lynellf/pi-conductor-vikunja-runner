@@ -108,6 +108,7 @@ const runPollCycleWithoutHeartbeat = async (
     ...(input.maxCommentChars === undefined
       ? {}
       : { maxCommentChars: input.maxCommentChars }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   if (poll.claim === null || poll.claim.status !== "claimed") {
     return { poll, execution: null };

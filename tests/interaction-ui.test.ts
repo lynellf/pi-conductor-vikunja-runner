@@ -68,6 +68,10 @@ interface FakeState {
   readonly transitions: string[];
   readonly watermarks: number[];
   readonly mutationKeys: string[];
+  readonly completedMutations: Array<{
+    key: string;
+    remoteId: string | null;
+  }>;
   readonly failedMutationKeys: string[];
   atomicResolutions: number;
   currentJob: Job;
@@ -86,6 +90,7 @@ const makeDependencies = (
     transitions: [],
     watermarks: [],
     mutationKeys: [],
+    completedMutations: [],
     failedMutationKeys: [],
     atomicResolutions: 0,
     currentJob: job,
@@ -109,7 +114,8 @@ const makeDependencies = (
         updatedAt: "",
       } as never;
     },
-    async completeMutation() {
+    async completeMutation(key: string, remoteId: string | null) {
+      state.completedMutations.push({ key, remoteId });
       return {} as never;
     },
     async failMutation(key: string) {
@@ -271,6 +277,60 @@ describe("createVikunjaQuestionUi", () => {
       "job:job-1:question:question-1:waiting",
       "job:job-1:question:question-1:running",
     ]);
+  });
+
+  it("reconciles an ambiguously delivered question comment", async () => {
+    const dependencies = makeDependencies([[]]);
+    let deliveredBody = "";
+    let commentRead = 0;
+    const ownerReply: TaskComment = {
+      id: commentId(105),
+      taskId: job.taskId,
+      authorId: userId(1),
+      body: "ship it",
+      createdAt: "2026-01-01T00:00:02.000Z",
+    };
+    const gateway = {
+      ...dependencies.gateway,
+      async postComment(_taskId: ReturnType<typeof taskId>, body: string) {
+        deliveredBody = body;
+        dependencies.state.comments.push(body);
+        throw new Error("response lost after comment creation");
+      },
+      async listComments() {
+        commentRead += 1;
+        if (commentRead === 1) {
+          return [
+            {
+              id: commentId(104),
+              taskId: job.taskId,
+              authorId: userId(2),
+              body: deliveredBody,
+              createdAt: "2026-01-01T00:00:01.000Z",
+            },
+          ];
+        }
+        return [ownerReply];
+      },
+    } as unknown as VikunjaGateway;
+    const ui = createVikunjaQuestionUi({} as never, {
+      gateway,
+      store: dependencies.store,
+      job,
+      layout,
+      ownerUserId: userId(1),
+      pollIntervalMs: 0,
+      sleep: async () => undefined,
+    });
+
+    await expect(ui.input("Need a decision", undefined, {})).resolves.toBe(
+      "ship it",
+    );
+    expect(dependencies.state.completedMutations).toContainEqual({
+      key: "job:job-1:question:question-1:comment",
+      remoteId: "104",
+    });
+    expect(dependencies.state.comments).toHaveLength(1);
   });
 
   it("does not move a question to Waiting after an owner bucket override", async () => {

@@ -93,6 +93,10 @@ const makeInput = (): {
     async getJob() {
       return current;
     },
+    async getCommentWatermark() {
+      return null;
+    },
+    async recordCommentWatermark() {},
     async recordTerminalFailure(
       _id: Job["id"],
       terminalErrorCode: NonNullable<Job["terminalErrorCode"]>,

@@ -92,6 +92,9 @@ const makeInput = (overrides: Record<string, unknown> = {}) => {
     async getJob() {
       return persisted;
     },
+    async getCommentWatermark() {
+      return null;
+    },
     async recordCommentWatermark(
       receivedTaskId: number,
       receivedCommentId: number,
@@ -325,8 +328,14 @@ describe("startClaimedJob", () => {
     ]);
   });
 
-  it("persists the consumed comment cursor before starting conductor", async () => {
+  it("preserves the claim-time cursor so startup commands remain pending", async () => {
     const dependencies = makeInput();
+    dependencies.input.store = {
+      ...dependencies.input.store,
+      async getCommentWatermark() {
+        return commentId(30);
+      },
+    } as unknown as JobStore;
     dependencies.input.gateway = {
       async listComments() {
         dependencies.events.push("comments");
@@ -335,20 +344,21 @@ describe("startClaimedJob", () => {
             id: commentId(40),
             taskId: task.id,
             authorId: userId(1),
-            body: "Context consumed by the initial goal",
+            body: "/pi abort stop before startup",
             createdAt: "2026-08-02T00:01:00.000Z",
           },
         ];
       },
     };
 
-    await startClaimedJob(dependencies.input);
+    const result = await startClaimedJob(dependencies.input);
 
+    expect(result.initialCommentId).toBe(30);
+    expect(result.goal).toContain("/pi abort stop before startup");
     expect(dependencies.events).toEqual([
       "prepare",
       "worktree:job-1:pi/vikunja-12-fix-api-auth:/data/jobs/12/worktree",
       "comments",
-      "watermark:12:40",
       "start:pi/vikunja-12-fix-api-auth:true:true",
       "run:job-1:run-1",
     ]);
