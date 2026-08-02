@@ -85,7 +85,9 @@ describe("GitRepositoryManager", () => {
     });
 
     expect(prepared.branch).toBe("pi/vikunja-12-fix-api-auth-injection");
-    expect(prepared.worktree).toBe(join(dataDir, "jobs", "12", "worktree"));
+    expect(prepared.worktree).toBe(
+      join(dataDir, "jobs", "12", "projects", "42", "worktree"),
+    );
     expect(await readFile(join(prepared.worktree, "README.md"), "utf8")).toBe(
       "initial\n",
     );
@@ -95,6 +97,28 @@ describe("GitRepositoryManager", () => {
     expect(prepared.worktree.startsWith(join(dataDir, "jobs", "12"))).toBe(
       true,
     );
+  });
+
+  it("reuses repositories when dataDir is a symlink", async () => {
+    const origin = await createOrigin();
+    const root = await mkdtemp(join("/tmp", "runner-git-data-link-"));
+    roots.push(root);
+    const canonicalDataDir = join(root, "canonical");
+    const linkedDataDir = join(root, "linked");
+    await mkdir(canonicalDataDir);
+    await symlink(canonicalDataDir, linkedDataDir);
+    const manager = new GitRepositoryManager(linkedDataDir);
+
+    const first = await manager.prepare(job(), project(origin), {
+      taskTitle: "Linked data root",
+    });
+    const retry = await manager.prepare(
+      { ...job(first.worktree, first.branch), attempt: 2 },
+      project(origin),
+    );
+
+    expect(retry).toEqual(first);
+    expect(retry.worktree.startsWith(canonicalDataDir)).toBe(true);
   });
 
   it("rejects a task directory symlink that escapes the data directory", async () => {
@@ -304,6 +328,42 @@ describe("GitRepositoryManager", () => {
     expect(await readFile(join(retry.worktree, "local.txt"), "utf8")).toBe(
       "preserve\n",
     );
+  });
+
+  it("isolates fallback worktrees when the same task changes projects", async () => {
+    const firstOrigin = await createOrigin();
+    const secondOrigin = await createOrigin();
+    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    roots.push(dataDir);
+    const manager = new GitRepositoryManager(dataDir);
+    const first = await manager.prepare(job(), project(firstOrigin), {
+      taskTitle: "Same title",
+    });
+    await writeFile(join(first.worktree, "project-a.txt"), "project A\n");
+    const secondProject = {
+      ...project(secondOrigin),
+      id: projectId(43),
+    };
+
+    const second = await manager.prepare(
+      {
+        ...job(),
+        id: "job-2" as Job["id"],
+        projectId: secondProject.id,
+        attempt: 2,
+        state: "running",
+      },
+      secondProject,
+      { taskTitle: "Same title" },
+    );
+
+    expect(second.worktree).toBe(
+      join(dataDir, "jobs", "12", "projects", "43", "worktree"),
+    );
+    expect(second.worktree).not.toBe(first.worktree);
+    await expect(
+      readFile(join(second.worktree, "project-a.txt"), "utf8"),
+    ).rejects.toThrow();
   });
 
   it("rejects an existing clone whose origin no longer matches configuration", async () => {

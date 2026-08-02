@@ -70,8 +70,10 @@ export interface CompleteConductorJobInput {
   readonly layout: ProjectLayout;
   readonly store: JobStore;
   readonly repository: RepositoryManager;
-  readonly gateway: Pick<VikunjaGateway, "moveTask" | "postComment"> &
-    Partial<Pick<VikunjaGateway, "getTask">>;
+  readonly gateway: Pick<
+    VikunjaGateway,
+    "getTask" | "moveTask" | "postComment"
+  >;
   readonly maxCommentChars?: number;
 }
 
@@ -162,7 +164,23 @@ const mutation = async (
   let remoteId: string | null = null;
   if (operation === "move_task") {
     const bucket = request.bucketId;
+    const expectedBucket = request.expectedBucketId;
     if (typeof bucket !== "number") throw new Error("invalid move bucket");
+    if (typeof expectedBucket !== "number") {
+      throw new Error("move mutation requires an expected bucket");
+    }
+    const current = await input.gateway.getTask(input.job.taskId);
+    if (
+      current.projectId !== input.job.projectId ||
+      current.done ||
+      current.bucketId !== expectedBucket
+    ) {
+      await input.store.failMutation(
+        key,
+        `task state superseded move (project ${current.projectId}, bucket ${current.bucketId}, done=${current.done})`,
+      );
+      throw new Error(`remote mutation ${key} was superseded`);
+    }
     await input.gateway.moveTask(input.job.taskId, bucketId(bucket));
   } else {
     const body = request.body;
@@ -403,56 +421,53 @@ export const completeConductorJob = async (
 
   // Re-read immediately before the terminal bucket move. A human may have
   // moved an active task while verification or publishing was running; never
-  // overwrite that choice with Review. Production gateways provide getTask,
-  // while the optional shape keeps small orchestration test doubles compatible.
-  if (input.gateway.getTask !== undefined) {
-    let currentTask: CodingTask;
+  // overwrite that choice with Review.
+  let currentTask: CodingTask;
+  try {
+    currentTask = await input.gateway.getTask(input.job.taskId);
+  } catch (error) {
+    return failCompletedJob(
+      input,
+      "VIKUNJA_UNAVAILABLE",
+      "the task state could not be confirmed before the Review transition",
+      error,
+    );
+  }
+  if (
+    currentTask.projectId !== input.job.projectId ||
+    currentTask.done ||
+    currentTask.bucketId !== input.layout.buckets.Running.id
+  ) {
+    let failed: Job;
     try {
-      currentTask = await input.gateway.getTask(input.job.taskId);
+      failed = await reportManualOverride({
+        job: input.job,
+        store: input.store,
+        gateway: input.gateway,
+        maxCommentChars: input.maxCommentChars ?? 12000,
+      });
     } catch (error) {
-      return failCompletedJob(
-        input,
-        "VIKUNJA_UNAVAILABLE",
-        "the task state could not be confirmed before the Review transition",
-        error,
-      );
-    }
-    if (
-      currentTask.projectId !== input.job.projectId ||
-      currentTask.done ||
-      currentTask.bucketId !== input.layout.buckets.Running.id
-    ) {
-      let failed: Job;
-      try {
-        failed = await reportManualOverride({
-          job: input.job,
-          store: input.store,
-          gateway: input.gateway,
-          maxCommentChars: input.maxCommentChars ?? 12000,
-        });
-      } catch (error) {
-        // The terminal override is durable even when comment delivery is
-        // unavailable; preserve the stable job error for the caller while
-        // leaving the mutation intent pending for startup replay.
-        const observed = await input.store.getJob(input.job.id);
-        if (
-          observed === null ||
-          observed.state !== "failed" ||
-          observed.terminalErrorCode !== "MANUAL_STATE_OVERRIDE"
-        ) {
-          throw error;
-        }
-        throw new JobCompletionError(
-          "job completion detected a manual state override",
-          observed,
-          error,
-        );
+      // The terminal override is durable even when comment delivery is
+      // unavailable; preserve the stable job error for the caller while
+      // leaving the mutation intent pending for startup replay.
+      const observed = await input.store.getJob(input.job.id);
+      if (
+        observed === null ||
+        observed.state !== "failed" ||
+        observed.terminalErrorCode !== "MANUAL_STATE_OVERRIDE"
+      ) {
+        throw error;
       }
       throw new JobCompletionError(
         "job completion detected a manual state override",
-        failed,
+        observed,
+        error,
       );
     }
+    throw new JobCompletionError(
+      "job completion detected a manual state override",
+      failed,
+    );
   }
 
   const moveKey = `job:${input.job.id}:completion:move-review`;
@@ -643,9 +658,8 @@ export interface ExecuteClaimedJobInput
   readonly signal?: AbortSignal;
   readonly gateway: Pick<
     VikunjaGateway,
-    "listComments" | "moveTask" | "postComment"
-  > &
-    Partial<Pick<VikunjaGateway, "getTask">>;
+    "getTask" | "listComments" | "moveTask" | "postComment"
+  >;
 }
 
 export interface ExecuteClaimedJobResult {

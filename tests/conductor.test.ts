@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { RunHandle } from "pi-conductor";
@@ -106,6 +106,32 @@ describe("PiConductorGateway", () => {
 
     await expect(gateway.resume(job(worktree), undefined)).rejects.toThrow(
       "job has no conductor run ID",
+    );
+  });
+
+  it("accepts a canonical persisted worktree when dataDir is a symlink", async () => {
+    const root = await mkdtemp(join("/tmp", "runner-conductor-data-"));
+    const canonicalDataDir = join(root, "canonical");
+    const linkedDataDir = join(root, "linked");
+    const worktree = join(canonicalDataDir, "jobs", "12", "worktree");
+    await mkdir(worktree, { recursive: true });
+    await symlink(canonicalDataDir, linkedDataDir);
+    const canonicalWorktree = await realpath(worktree);
+    const calls: Array<{ manifest: string; options: unknown }> = [];
+    const gateway = new PiConductorGateway(
+      {
+        dataDir: linkedDataDir,
+        agentDir: join(canonicalDataDir, "agent"),
+        projects: { "42": project() },
+        modelRegistry: {} as ModelRegistry,
+      },
+      fakeApi(calls),
+    );
+
+    await gateway.start(job(canonicalWorktree), "goal", undefined);
+
+    expect(calls[0]?.manifest).toBe(
+      join(canonicalWorktree, ".pi/conductor.yaml"),
     );
   });
 

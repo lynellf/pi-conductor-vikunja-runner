@@ -144,21 +144,17 @@ export class PiConductorGateway implements ConductorGateway {
         `project ${job.projectId} is not configured`,
       );
     }
-    const taskRoot = join(this.dataDir, "jobs", String(job.taskId));
-    const worktree = resolve(job.worktree);
-    if (!inside(taskRoot, worktree)) {
-      throw new ConductorIntegrationError(
-        "worktree escapes configured task data directory",
-      );
-    }
+    let dataRoot: string;
     let realWorktree: string;
     try {
-      realWorktree = await realpath(worktree);
+      dataRoot = await realpath(this.dataDir);
+      realWorktree = await realpath(resolve(job.worktree));
     } catch (error) {
       throw new ConductorIntegrationError(
         `task worktree is not available: ${String(error)}`,
       );
     }
+    const taskRoot = join(dataRoot, "jobs", String(job.taskId));
     if (!inside(taskRoot, realWorktree)) {
       throw new ConductorIntegrationError(
         "worktree escapes configured task data directory",

@@ -206,14 +206,14 @@ Rules:
 
 ## 8. Repository and worktree contract
 
-The runner maintains one persistent clone per configured project and one worktree per task:
+The runner maintains one persistent clone per configured project and one worktree per task and project. Including the project identity prevents a task moved between configured projects from reusing a checkout for the wrong repository:
 
 ```text
 <data_dir>/
   state.sqlite
   conductor-runs/
   repositories/<project_id>/repo/
-  jobs/<task_id>/worktree/
+  jobs/<task_id>/projects/<project_id>/worktree/
   jobs/<task_id>/metadata.json
 ```
 
@@ -225,7 +225,7 @@ For a first attempt:
 4. Create the task worktree on that branch.
 5. Verify the real path remains under `<data_dir>/jobs/<task_id>`.
 
-For a retry from **Review** or **Failed**, reuse the existing task branch and worktree unless the owner explicitly requests a clean retry in configuration or a future command.
+For a retry from **Review** or **Failed**, reuse the existing task branch and worktree only when the project and configured repository are unchanged, unless the owner explicitly requests a clean retry in configuration or a future command.
 
 All Git and verification processes must be spawned with argument arrays and an explicit working directory. Never interpolate task content into a shell command. Never force-push, delete a remote branch, merge, rebase a shared branch, or discard uncommitted files automatically.
 

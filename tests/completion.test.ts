@@ -108,6 +108,11 @@ const makeInput = (overrides: Record<string, unknown> = {}) => {
       }
       return intent;
     },
+    async failMutation(key: string) {
+      const intent = mutations.get(key);
+      if (intent !== undefined) intent.state = "failed";
+      return intent;
+    },
     async getJob() {
       return current;
     },
@@ -389,6 +394,46 @@ describe("completeConductorJob", () => {
     ]);
   });
 
+  it("does not overwrite an owner terminal move while reporting conductor failure", async () => {
+    const dependencies = makeInput();
+    dependencies.input.handle = {
+      async completion() {
+        return { finalCheckpoint: {}, exitReason: "session_failed" as const };
+      },
+    } as unknown as ConductorHandle;
+    dependencies.input.gateway = {
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: layout.buckets.Done.id,
+          done: true,
+        };
+      },
+      async moveTask(_taskId: unknown, bucket: unknown) {
+        dependencies.events.push(`move:${bucket}`);
+      },
+      async postComment(_taskId: unknown, body: string) {
+        dependencies.events.push(`comment:${body.includes("Review ready")}`);
+        return 101;
+      },
+    } as CompleteConductorJobInput["gateway"];
+
+    await expect(
+      completeConductorJob(dependencies.input),
+    ).rejects.toBeInstanceOf(JobCompletionError);
+
+    expect(dependencies.events).toEqual(["transition:failed", "comment:false"]);
+    expect(
+      dependencies.mutations.get(
+        "job:job-1:completion:move-failed:conductor_session_failed",
+      ),
+    ).toMatchObject({ state: "failed" });
+  });
+
   it("fails before publishing when verification fails or leaves files dirty", async () => {
     const dependencies = makeInput();
     dependencies.input.repository = {
@@ -410,6 +455,17 @@ describe("completeConductorJob", () => {
   it("retains a pending Failed-bucket intent when the remote move is unavailable", async () => {
     const dependencies = makeInput();
     dependencies.input.gateway = {
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: layout.buckets.Running.id,
+          done: false,
+        };
+      },
       async moveTask(_taskId: unknown, bucket: unknown) {
         if (bucket === 6) throw new Error("Vikunja unavailable");
       },
@@ -468,11 +524,24 @@ describe("completeConductorJob", () => {
     ]);
   });
 
-  it("fails and moves to Failed when the final report cannot be posted", async () => {
+  it("preserves Review when the final report fails after the terminal move", async () => {
     const dependencies = makeInput();
+    let remoteBucket = layout.buckets.Running.id;
     dependencies.input.gateway = {
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: remoteBucket,
+          done: false,
+        };
+      },
       async moveTask(_taskId: unknown, bucket: unknown) {
         dependencies.events.push(`move:${bucket}`);
+        remoteBucket = bucketId(bucket as number);
       },
       async postComment() {
         throw new Error("Vikunja unavailable");
@@ -491,8 +560,13 @@ describe("completeConductorJob", () => {
       "publish",
       "move:5",
       "transition:failed",
-      "move:6",
     ]);
+    expect(remoteBucket).toBe(layout.buckets.Review.id);
+    expect(
+      dependencies.mutations.get(
+        "job:job-1:completion:move-failed:vikunja_unavailable",
+      ),
+    ).toMatchObject({ state: "failed" });
     expect(
       dependencies.mutations.get("job:job-1:completion:review-comment"),
     ).toMatchObject({ state: "pending" });

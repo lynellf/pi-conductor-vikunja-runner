@@ -175,11 +175,13 @@ export class GitRepositoryManager {
       "repo",
     );
     const jobRoot = join(dataRoot, "jobs", String(job.taskId));
+    const projectJobRoot = join(jobRoot, "projects", String(project.id));
     this.assertLexicallyConfined(dataRoot, repository);
     this.assertLexicallyConfined(dataRoot, jobRoot);
+    this.assertLexicallyConfined(jobRoot, projectJobRoot);
 
     try {
-      await this.prepareClone(repository, project);
+      await this.prepareClone(dataRoot, repository, project);
       await this.git.run(
         [
           "rev-parse",
@@ -191,7 +193,14 @@ export class GitRepositoryManager {
       await mkdir(jobRoot, { recursive: true });
       const realJobRoot = await realpath(jobRoot);
       this.assertConfined(dataRoot, realJobRoot, "job directory");
-      const worktree = job.worktree ?? join(realJobRoot, "worktree");
+      await mkdir(projectJobRoot, { recursive: true });
+      const realProjectJobRoot = await realpath(projectJobRoot);
+      this.assertConfined(
+        realJobRoot,
+        realProjectJobRoot,
+        "project job directory",
+      );
+      const worktree = job.worktree ?? join(realProjectJobRoot, "worktree");
       this.assertLexicallyConfined(realJobRoot, worktree);
       const branch =
         job.branch ?? taskBranchName(job.taskId, options.taskTitle);
@@ -332,6 +341,7 @@ export class GitRepositoryManager {
   }
 
   private async prepareClone(
+    dataRoot: string,
     repository: string,
     project: ProjectConfig,
   ): Promise<void> {
@@ -339,12 +349,12 @@ export class GitRepositoryManager {
       await mkdir(dirname(repository), { recursive: true });
       await this.git.run(
         ["clone", "--origin", "origin", project.repository, repository],
-        this.dataDir,
+        dataRoot,
       );
       return;
     }
     const realRepository = await realpath(repository);
-    this.assertConfined(this.dataDir, realRepository, "repository");
+    this.assertConfined(dataRoot, realRepository, "repository");
     await this.git.run(["rev-parse", "--git-dir"], realRepository);
     const configuredRemote = await this.git.run(
       ["remote", "get-url", "origin"],

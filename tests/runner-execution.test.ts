@@ -196,6 +196,9 @@ const makeInput = (): {
     runnerUserId: userId(2),
     store,
     gateway: {
+      async getTask() {
+        return { ...task, bucketId: layout.buckets.Running.id };
+      },
       async listComments() {
         events.push("comments");
         return [];
@@ -289,6 +292,7 @@ describe("executeClaimedJob", () => {
     expect(dependencies.events).toEqual([
       "prepare-failed",
       "transition:failed",
+      "get-task",
       "get-task",
       "move:6",
       "start-failure-comment",
