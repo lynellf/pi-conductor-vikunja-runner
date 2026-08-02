@@ -199,6 +199,33 @@ describe("resumeRecoverableJob", () => {
     expect(dependencies.events).toEqual(["resume:run-1:true"]);
   });
 
+  it("atomically fails a recovered running job with no persisted run ID", async () => {
+    const dependencies = makeInput();
+    dependencies.input.job = {
+      ...job,
+      branch: "pi/vikunja-12-fix-api-auth",
+      worktree: "/data/jobs/12/worktree",
+    };
+
+    await expect(
+      resumeRecoverableJob(dependencies.input),
+    ).rejects.toMatchObject({
+      name: "JobStartError",
+      job: expect.objectContaining({
+        state: "failed",
+        terminalErrorCode: "CONDUCTOR_START_FAILED",
+      }),
+    });
+    expect(dependencies.events).toContain("terminal:CONDUCTOR_START_FAILED");
+    expect(dependencies.terminalIntents).toEqual([
+      expect.objectContaining({
+        operation: "move_task",
+        request: { bucketId: 6, expectedBucketId: 3 },
+      }),
+      expect.objectContaining({ operation: "post_comment" }),
+    ]);
+  });
+
   it("fails safely when resuming does not return the recorded run", async () => {
     const dependencies = makeInput();
     dependencies.input.job = {

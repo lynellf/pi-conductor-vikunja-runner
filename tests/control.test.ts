@@ -5,7 +5,12 @@ import {
   startPiCommentMonitor,
 } from "../src/domain/control.js";
 import type { Job, JobStore } from "../src/domain/jobs.js";
-import { commentId, taskId, userId } from "../src/domain/types.js";
+import {
+  commentId,
+  type ProjectLayout,
+  taskId,
+  userId,
+} from "../src/domain/types.js";
 import type { Milestone } from "../src/persistence/contracts.js";
 import type { VikunjaGateway } from "../src/vikunja/gateway.js";
 
@@ -21,6 +26,21 @@ const job: Job = {
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   terminalErrorCode: null,
+};
+
+const layout: ProjectLayout = {
+  viewId: 8 as never,
+  buckets: {
+    Backlog: { id: 1 as never, title: "Backlog", position: 0 },
+    Ready: { id: 2 as never, title: "Ready", position: 1 },
+    Running: { id: 3 as never, title: "Running", position: 2 },
+    Waiting: { id: 4 as never, title: "Waiting", position: 3 },
+    Review: { id: 5 as never, title: "Review", position: 4 },
+    Failed: { id: 6 as never, title: "Failed", position: 5 },
+    Done: { id: 7 as never, title: "Done", position: 6 },
+  },
+  defaultBucketId: 1 as never,
+  doneBucketId: 7 as never,
 };
 
 const handle = (calls: string[]): ConductorHandle =>
@@ -400,6 +420,88 @@ describe("executePiComment", () => {
     expect(deps.comments).toHaveLength(1);
   });
 
+  it.each([
+    {
+      name: "the task move to Waiting precedes the local job transition",
+      localState: "running" as const,
+      remoteBucketId: layout.buckets.Waiting.id,
+      intentSuffix: "waiting",
+      expectedBucketId: layout.buckets.Running.id,
+    },
+    {
+      name: "the accepted-answer move to Running precedes local resolution",
+      localState: "waiting" as const,
+      remoteBucketId: layout.buckets.Running.id,
+      intentSuffix: "running",
+      expectedBucketId: layout.buckets.Waiting.id,
+    },
+  ])("preserves a runner-owned question transition when $name", async (scenario) => {
+    const deps = makeDeps();
+    const calls: string[] = [];
+    const currentJob = { ...job, state: scenario.localState };
+    const questionId = "question-1";
+    const monitorStore = {
+      ...deps.store,
+      async getJob() {
+        return currentJob;
+      },
+      async getActiveQuestion() {
+        return { id: questionId, jobId: job.id, state: "pending" } as never;
+      },
+      async getMutationIntent(key: string) {
+        expect(key).toBe(
+          `job:${job.id}:question:${questionId}:${scenario.intentSuffix}`,
+        );
+        return {
+          jobId: job.id,
+          taskId: job.taskId,
+          operation: "move_task",
+          idempotencyKey: key,
+          request: {
+            bucketId: scenario.remoteBucketId,
+            expectedBucketId: scenario.expectedBucketId,
+          },
+          state: "succeeded",
+        } as never;
+      },
+    } as unknown as JobStore;
+    const gateway = {
+      ...deps.gateway,
+      async listComments() {
+        return [];
+      },
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: scenario.remoteBucketId,
+          done: false,
+        };
+      },
+    } as unknown as VikunjaGateway;
+
+    const monitor = startPiCommentMonitor({
+      job,
+      handle: handle(calls),
+      ownerUserId: userId(1),
+      store: monitorStore,
+      gateway,
+      layout,
+      initialCommentId: null,
+      pollIntervalMs: 10,
+      logError: () => undefined,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    monitor.stop();
+    await monitor.done;
+
+    expect(calls).toEqual([]);
+    expect(deps.comments).toEqual([]);
+  });
+
   it("aborts and reports a human bucket override without moving it back", async () => {
     const deps = makeDeps();
     const calls: string[] = [];
@@ -444,20 +546,7 @@ describe("executePiComment", () => {
       ownerUserId: userId(1),
       store: monitorStore,
       gateway,
-      layout: {
-        viewId: 8 as never,
-        buckets: {
-          Backlog: { id: 1 as never, title: "Backlog", position: 0 },
-          Ready: { id: 2 as never, title: "Ready", position: 1 },
-          Running: { id: 3 as never, title: "Running", position: 2 },
-          Waiting: { id: 4 as never, title: "Waiting", position: 3 },
-          Review: { id: 5 as never, title: "Review", position: 4 },
-          Failed: { id: 6 as never, title: "Failed", position: 5 },
-          Done: { id: 7 as never, title: "Done", position: 6 },
-        },
-        defaultBucketId: 1 as never,
-        doneBucketId: 7 as never,
-      },
+      layout,
       initialCommentId: null,
       pollIntervalMs: 10,
       logError: () => undefined,

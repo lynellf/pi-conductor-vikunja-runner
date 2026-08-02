@@ -80,7 +80,20 @@ const dependencies = (ready = true) => {
     recordHeartbeat: vi.fn(async () => undefined),
     recoverableJobs: vi.fn(async () => []),
     tryClaim: vi.fn(async () => (ready ? job : null)),
-    transition: vi.fn(async () => claimed),
+    transition: vi.fn(
+      async (
+        _id: Job["id"],
+        transition: Parameters<JobStore["transition"]>[1],
+      ) =>
+        transition.state === "failed"
+          ? {
+              ...claimed,
+              state: "failed" as const,
+              terminalErrorCode: transition.terminalErrorCode,
+            }
+          : claimed,
+    ),
+    getJob: vi.fn(async () => claimed),
     recordTerminalFailure: vi.fn(
       async (
         _id: Job["id"],
@@ -165,6 +178,45 @@ describe("runPollCycle", () => {
     });
     expect(getTask).toHaveBeenCalledWith(task.id);
     expect(validateProjectLayout).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves an owner override observed after claiming and skips execution", async () => {
+    const { store, gateway, getTask, validateProjectLayout } = dependencies();
+    const overriddenTask = {
+      ...task,
+      bucketId: layout.buckets.Done.id,
+      done: true,
+    };
+    getTask
+      .mockReset()
+      .mockResolvedValueOnce(task)
+      .mockResolvedValueOnce(overriddenTask);
+    const execute = vi.fn();
+
+    const report = await runPollCycle({
+      projects: { "42": project },
+      store,
+      gateway,
+      ownerUserId: 1 as never,
+      runnerUserId: 2 as never,
+      repository: noopRepository,
+      conductor: noopConductor as never,
+      uiForJob: () => noopUi,
+      execute,
+    });
+
+    expect(report.execution).toBeNull();
+    expect(execute).not.toHaveBeenCalled();
+    expect(validateProjectLayout).toHaveBeenCalledTimes(2);
+    expect(store.transition).toHaveBeenLastCalledWith(job.id, {
+      state: "failed",
+      terminalErrorCode: "MANUAL_STATE_OVERRIDE",
+    });
+    expect(gateway.moveTask).toHaveBeenCalledOnce();
+    expect(gateway.postComment).toHaveBeenLastCalledWith(
+      task.id,
+      expect.stringContaining("MANUAL_STATE_OVERRIDE"),
+    );
   });
 
   it("fails and reports a claimed job when its post-claim task refresh fails", async () => {

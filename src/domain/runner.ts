@@ -2,6 +2,7 @@ import type { RunnerUiContext } from "../conductor/gateway.js";
 import type { ProjectConfig } from "../config/config.js";
 import type { RepositoryManager } from "../repositories/git.js";
 import type { VikunjaGateway } from "../vikunja/gateway.js";
+import { reportManualOverride } from "./idempotency.js";
 import type { JobStore } from "./jobs.js";
 import {
   type ExecuteClaimedJobInput,
@@ -150,6 +151,16 @@ const runPollCycleWithoutHeartbeat = async (
     throw cause;
   };
 
+  let layout: Awaited<ReturnType<VikunjaGateway["validateProjectLayout"]>>;
+  try {
+    layout = await input.gateway.validateProjectLayout(project);
+  } catch (error) {
+    return failBeforeExecution(
+      "PROJECT_LAYOUT_INVALID",
+      "the project layout changed before conductor start",
+      error,
+    );
+  }
   let task: Awaited<ReturnType<VikunjaGateway["getTask"]>>;
   try {
     task = await input.gateway.getTask(job.taskId);
@@ -160,15 +171,18 @@ const runPollCycleWithoutHeartbeat = async (
       error,
     );
   }
-  let layout: Awaited<ReturnType<VikunjaGateway["validateProjectLayout"]>>;
-  try {
-    layout = await input.gateway.validateProjectLayout(project);
-  } catch (error) {
-    return failBeforeExecution(
-      "PROJECT_LAYOUT_INVALID",
-      "the project layout changed before conductor start",
-      error,
-    );
+  if (
+    task.projectId !== job.projectId ||
+    task.done ||
+    task.bucketId !== layout.buckets.Running.id
+  ) {
+    await reportManualOverride({
+      job,
+      store: input.store,
+      gateway: input.gateway,
+      maxCommentChars: input.maxCommentChars ?? 12000,
+    });
+    return { poll, execution: null };
   }
   const execution = await (input.execute ?? execute)({
     job,

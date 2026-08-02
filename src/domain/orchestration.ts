@@ -98,15 +98,14 @@ export const resumeRecoverableJob = async (
   if (input.job.state !== "running") {
     throw new Error("only a running job can resume a conductor session");
   }
-  if (
-    input.job.conductorRunId === null ||
-    input.job.conductorRunId.trim() === ""
-  ) {
-    throw new Error("recoverable job has no conductor run ID");
-  }
-
   let handle: ConductorHandle | undefined;
   try {
+    if (
+      input.job.conductorRunId === null ||
+      input.job.conductorRunId.trim() === ""
+    ) {
+      throw new Error("recoverable job has no conductor run ID");
+    }
     handle = await input.conductor.resume(input.job, input.ui);
     if (handle.runId.trim() === "") {
       throw new Error("conductor returned an empty run ID");

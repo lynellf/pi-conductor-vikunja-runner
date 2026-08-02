@@ -240,6 +240,92 @@ const latestCommentId = (
   return latest;
 };
 
+const isExpectedQuestionTransition = async (
+  input: PiCommentMonitorInput,
+  currentJob: Job,
+  task: {
+    readonly projectId: number;
+    readonly bucketId: number;
+    readonly done: boolean;
+  },
+): Promise<boolean> => {
+  if (
+    input.layout === undefined ||
+    task.projectId !== currentJob.projectId ||
+    task.done
+  ) {
+    return false;
+  }
+  const getActiveQuestion = input.store.getActiveQuestion;
+  const getMutationIntent = input.store.getMutationIntent;
+  if (
+    typeof getActiveQuestion !== "function" ||
+    typeof getMutationIntent !== "function"
+  ) {
+    return false;
+  }
+
+  const transition =
+    currentJob.state === "running" &&
+    task.bucketId === input.layout.buckets.Waiting.id
+      ? {
+          suffix: "waiting",
+          bucketId: input.layout.buckets.Waiting.id,
+          expectedBucketId: input.layout.buckets.Running.id,
+        }
+      : currentJob.state === "waiting" &&
+          task.bucketId === input.layout.buckets.Running.id
+        ? {
+            suffix: "running",
+            bucketId: input.layout.buckets.Running.id,
+            expectedBucketId: input.layout.buckets.Waiting.id,
+          }
+        : null;
+  if (transition === null) return false;
+
+  const question = await getActiveQuestion.call(input.store, currentJob.id);
+  if (question === null) return false;
+  const key = `job:${currentJob.id}:question:${question.id}:${transition.suffix}`;
+  const intent = await getMutationIntent.call(input.store, key);
+  if (
+    intent === null ||
+    intent.jobId !== currentJob.id ||
+    intent.taskId !== currentJob.taskId ||
+    intent.operation !== "move_task" ||
+    intent.state === "failed" ||
+    typeof intent.request !== "object" ||
+    intent.request === null ||
+    Array.isArray(intent.request)
+  ) {
+    return false;
+  }
+  const request = intent.request as Record<string, unknown>;
+  return (
+    request.bucketId === transition.bucketId &&
+    request.expectedBucketId === transition.expectedBucketId
+  );
+};
+
+const jobMatchesTask = (
+  job: Job,
+  task: {
+    readonly projectId: number;
+    readonly bucketId: number;
+    readonly done: boolean;
+  },
+  layout: ProjectLayout,
+): boolean => {
+  const expectedBucket =
+    job.state === "waiting"
+      ? layout.buckets.Waiting.id
+      : layout.buckets.Running.id;
+  return (
+    task.projectId === job.projectId &&
+    !task.done &&
+    task.bucketId === expectedBucket
+  );
+};
+
 const observeManualOverride = async (
   input: PiCommentMonitorInput,
   controller: AbortController,
@@ -248,20 +334,33 @@ const observeManualOverride = async (
   const getTask = input.gateway.getTask;
   if (typeof getTask !== "function") return true;
   if (typeof input.store.getJob !== "function") return true;
-  const currentJob = await input.store.getJob(input.job.id);
+  let currentJob = await input.store.getJob(input.job.id);
   if (currentJob === null) return false;
   if (currentJob.state !== "running" && currentJob.state !== "waiting") {
     return false;
   }
   const task = await getTask(input.job.taskId);
-  const expectedBucket =
-    currentJob.state === "waiting"
-      ? input.layout.buckets.Waiting.id
-      : input.layout.buckets.Running.id;
   if (
-    task.projectId === currentJob.projectId &&
-    !task.done &&
-    task.bucketId === expectedBucket
+    jobMatchesTask(currentJob, task, input.layout) ||
+    (await isExpectedQuestionTransition(input, currentJob, task))
+  ) {
+    return true;
+  }
+
+  // The question bridge can atomically update the question and job between
+  // the reads above. Re-read before treating a stale job snapshot as human
+  // input; the remote task may already match the newly persisted state.
+  const latestJob = await input.store.getJob(input.job.id);
+  if (
+    latestJob === null ||
+    (latestJob.state !== "running" && latestJob.state !== "waiting")
+  ) {
+    return false;
+  }
+  currentJob = latestJob;
+  if (
+    jobMatchesTask(currentJob, task, input.layout) ||
+    (await isExpectedQuestionTransition(input, currentJob, task))
   ) {
     return true;
   }
