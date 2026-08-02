@@ -125,6 +125,14 @@ export const executePiComment = async (
     const key = `${keyBase}:steer`;
     const existing = await input.store.getMilestone(input.job.id, key);
     if (existing === null) {
+      // Persist the at-most-once dispatch boundary before invoking the
+      // non-idempotent conductor handle. Recovery may retry acknowledgement
+      // delivery, but must never apply the same steering command twice.
+      await input.store.recordMilestone({
+        jobId: input.job.id,
+        type: "steering",
+        idempotencyKey: key,
+      });
       await input.handle.steer(action.message);
       await postMilestone(
         input,

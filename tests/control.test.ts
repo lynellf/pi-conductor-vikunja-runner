@@ -163,6 +163,60 @@ describe("executePiComment", () => {
     );
   });
 
+  it("records steering dispatch durably before invoking the handle", async () => {
+    const deps = makeDeps();
+    const key = "job:job-1:comment:27:steer";
+    let persistedBeforeDispatch = false;
+    const dispatchAwareHandle = {
+      ...handle([]),
+      async steer() {
+        persistedBeforeDispatch =
+          (await deps.store.getMilestone(job.id, key)) !== null;
+      },
+    } as ConductorHandle;
+
+    await executePiComment({
+      job,
+      commentId: commentId(27),
+      action: { kind: "steer", message: "dispatch once" },
+      handle: dispatchAwareHandle,
+      store: deps.store,
+      gateway: deps.gateway,
+    });
+
+    expect(persistedBeforeDispatch).toBe(true);
+  });
+
+  it("does not replay steering after an ambiguous dispatch interruption", async () => {
+    const deps = makeDeps();
+    let dispatches = 0;
+    const interruptedHandle = {
+      ...handle([]),
+      async steer() {
+        dispatches += 1;
+        throw new Error("process interrupted after dispatch");
+      },
+    } as ConductorHandle;
+    const input = {
+      job,
+      commentId: commentId(28),
+      action: { kind: "steer", message: "apply exactly once" } as const,
+      handle: interruptedHandle,
+      store: deps.store,
+      gateway: deps.gateway,
+    };
+
+    await expect(executePiComment(input)).rejects.toThrow(
+      "process interrupted after dispatch",
+    );
+    await expect(executePiComment(input)).resolves.toEqual({
+      status: "handled",
+    });
+
+    expect(dispatches).toBe(1);
+    expect(deps.comments).toHaveLength(1);
+  });
+
   it("keeps a failed steering acknowledgement retryable", async () => {
     const deps = makeDeps();
     const calls: string[] = [];
