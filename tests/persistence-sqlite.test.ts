@@ -66,6 +66,29 @@ describe("SqliteJobStore", () => {
     expect(retry?.attempt).toBe(2);
   });
 
+  it("carries a persisted branch and worktree into a retry attempt", async () => {
+    const store = await openStore();
+    const first = await store.tryClaim(task(10));
+    if (first === null) throw new Error("claim unexpectedly failed");
+    await store.recordWorktree(
+      first.id,
+      "pi/vikunja-10-original-title",
+      "/var/lib/runner/jobs/10/worktree",
+    );
+    await store.transition(first.id, {
+      state: "failed",
+      terminalErrorCode: "VERIFY_FAILED",
+    });
+
+    const retry = await store.tryClaim({ ...task(10), title: "Owner renamed" });
+
+    expect(retry).toMatchObject({
+      attempt: 2,
+      branch: "pi/vikunja-10-original-title",
+      worktree: "/var/lib/runner/jobs/10/worktree",
+    });
+  });
+
   it("upgrades a v1 database without losing recoverable jobs", async () => {
     const directory = await mkdtemp(join(tmpdir(), "vikunja-runner-"));
     const path = join(directory, "state.sqlite");

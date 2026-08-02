@@ -1,6 +1,6 @@
 import type { RemoteMutationIntent } from "../persistence/contracts.js";
 import type { VikunjaGateway } from "../vikunja/gateway.js";
-import type { JobStore } from "./jobs.js";
+import type { JobId, JobStore } from "./jobs.js";
 import type { ProjectId, ProjectLayout, TaskId } from "./types.js";
 import { bucketId } from "./types.js";
 
@@ -21,6 +21,8 @@ export interface StartupReconciliationReport {
   readonly mutationsReplayed: number;
   readonly mutationsPending: number;
   readonly mutationFailures: number;
+  /** Recoverable jobs whose remote state was not confirmed during startup. */
+  readonly deferredJobIds?: readonly JobId[];
 }
 
 interface ReconciliationRequest {
@@ -92,6 +94,7 @@ export async function reconcileStartup(
   let jobsFailed = 0;
   let questionsInterrupted = 0;
   let manualOverrides = 0;
+  const deferredJobIds: JobId[] = [];
 
   for (const job of jobs) {
     let remoteTask: Awaited<ReturnType<typeof input.gateway.getTask>>;
@@ -99,8 +102,10 @@ export async function reconcileStartup(
       remoteTask = await input.gateway.getTask(job.taskId);
     } catch {
       // A transient Vikunja read must not prevent the daemon from starting.
-      // Preserve the recoverable job and let the next poll/startup retry the
-      // observation before taking any bucket or terminal-state action.
+      // Preserve the recoverable job and let the next startup retry the
+      // observation before taking any bucket or terminal-state action. The
+      // caller must not resume this job from the same unconfirmed snapshot.
+      deferredJobIds.push(job.id);
       continue;
     }
     const layout = input.layouts.get(remoteTask.projectId);
@@ -130,7 +135,10 @@ export async function reconcileStartup(
           remoteTask.id,
           "move_task",
           `job:${job.id}:startup-wait-failed:move`,
-          { bucketId: layout.buckets.Failed.id },
+          {
+            bucketId: layout.buckets.Failed.id,
+            expectedBucketId: layout.buckets.Waiting.id,
+          },
         );
         await deliverMutation(
           input,
@@ -206,7 +214,10 @@ export async function reconcileStartup(
           remoteTask.id,
           "move_task",
           `job:${job.id}:startup-claim-interrupted:move-failed`,
-          { bucketId: layout.buckets.Failed.id },
+          {
+            bucketId: layout.buckets.Failed.id,
+            expectedBucketId: layout.buckets.Running.id,
+          },
         );
         await deliverMutation(
           input,
@@ -265,7 +276,10 @@ export async function reconcileStartup(
           remoteTask.id,
           "move_task",
           `job:${job.id}:startup-wait-failed:move`,
-          { bucketId: layout.buckets.Failed.id },
+          {
+            bucketId: layout.buckets.Failed.id,
+            expectedBucketId: layout.buckets.Waiting.id,
+          },
         );
         await deliverMutation(
           input,
@@ -331,6 +345,7 @@ export async function reconcileStartup(
     mutationsReplayed,
     mutationsPending,
     mutationFailures,
+    deferredJobIds,
   };
 }
 
@@ -354,14 +369,17 @@ const replayMutation = async (
   switch (intent.operation) {
     case "move_task": {
       const expectedBucket = request.expectedBucketId;
-      if (expectedBucket !== undefined) {
-        const expected = positiveId(
-          expectedBucket,
-          `${intent.idempotencyKey}.expectedBucketId`,
+      if (expectedBucket === undefined) {
+        throw new ReconciliationRequestError(
+          `mutation ${intent.idempotencyKey} is missing expectedBucketId`,
         );
-        const current = await gateway.getTask(intent.taskId);
-        if (current.done || current.bucketId !== expected) return null;
       }
+      const expected = positiveId(
+        expectedBucket,
+        `${intent.idempotencyKey}.expectedBucketId`,
+      );
+      const current = await gateway.getTask(intent.taskId);
+      if (current.done || current.bucketId !== expected) return null;
       await gateway.moveTask(
         intent.taskId,
         bucketId(

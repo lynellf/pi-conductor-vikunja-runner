@@ -261,7 +261,7 @@ export class VikunjaHttpGateway implements VikunjaGateway {
       throw new VikunjaResponseError(`task ${id} has no known project view`);
     const response = await this.request(
       `/projects/${location.project.id}/views/${location.layout.viewId}/buckets/${targetBucketId}/tasks`,
-      { method: "POST", body: { task_id: id } },
+      { method: "PUT", body: { task_id: id } },
     );
     parseTaskBucket(
       response,

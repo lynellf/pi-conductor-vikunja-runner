@@ -305,4 +305,19 @@ describe("GitRepositoryManager", () => {
       "preserve\n",
     );
   });
+
+  it("rejects an existing clone whose origin no longer matches configuration", async () => {
+    const origin = await createOrigin();
+    const replacement = await createOrigin();
+    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    roots.push(dataDir);
+    const manager = new GitRepositoryManager(dataDir);
+    await manager.prepare(job(), project(origin), { taskTitle: "First" });
+
+    await expect(
+      manager.prepare(job(), project(replacement), { taskTitle: "Second" }),
+    ).rejects.toThrow(
+      "existing repository origin does not match configured repository",
+    );
+  });
 });

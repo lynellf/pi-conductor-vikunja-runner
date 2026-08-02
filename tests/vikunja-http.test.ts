@@ -399,9 +399,11 @@ describe("VikunjaHttpGateway", () => {
     const commentId = await gateway.postComment(taskId(10), "hello");
 
     expect(commentId).toBe(77);
-    expect(
-      requests.some(({ url }) => url.includes("/views/8/buckets/3/tasks")),
-    ).toBe(true);
+    const move = requests.find(({ url }) =>
+      url.includes("/views/8/buckets/3/tasks"),
+    );
+    expect(move).toBeDefined();
+    expect(move?.init.method).toBe("PUT");
     const assignment = requests.find(({ url }) =>
       url.endsWith("/tasks/10/assignees"),
     );

@@ -31,6 +31,14 @@ const truncate = (value: string, maxChars: number): string => {
 const request = (bucketId?: number, body?: string): Record<string, unknown> =>
   bucketId === undefined ? { body } : { bucketId };
 
+const moveRequest = (
+  targetBucketId: number,
+  expectedBucketId: number,
+): Record<string, unknown> => ({
+  bucketId: targetBucketId,
+  expectedBucketId,
+});
+
 const deliverMutation = async (
   store: JobStore,
   gateway: ClaimTaskInput["gateway"],
@@ -149,7 +157,10 @@ const failClaim = async (
         job.taskId,
         "move_task",
         `job:${job.id}:claim:move-failed`,
-        request(input.layout.buckets.Failed.id),
+        moveRequest(
+          input.layout.buckets.Failed.id,
+          input.layout.buckets.Running.id,
+        ),
       );
     }
   } catch {
@@ -249,7 +260,10 @@ export const claimReadyTask = async (
       job.taskId,
       "move_task",
       `job:${job.id}:claim:move`,
-      request(input.layout.buckets.Running.id),
+      moveRequest(
+        input.layout.buckets.Running.id,
+        input.layout.buckets.Ready.id,
+      ),
     );
     remoteRunning = true;
     await deliverMutation(

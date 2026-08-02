@@ -222,6 +222,7 @@ const failCompletedJob = async (
   try {
     await mutation(input, "move_task", moveKey, {
       bucketId: input.layout.buckets.Failed.id,
+      expectedBucketId: input.layout.buckets.Running.id,
     });
   } catch {
     // Keep the move intent pending so startup reconciliation can retry it.
@@ -458,6 +459,7 @@ export const completeConductorJob = async (
   try {
     await mutation(input, "move_task", moveKey, {
       bucketId: input.layout.buckets.Review.id,
+      expectedBucketId: input.layout.buckets.Running.id,
     });
   } catch (error) {
     return failCompletedJob(

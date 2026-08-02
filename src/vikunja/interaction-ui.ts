@@ -109,13 +109,14 @@ const deliverComment = async (
 const moveTask = async (
   options: VikunjaQuestionUiOptions,
   bucket: BucketId,
+  expectedBucket: BucketId,
   idempotencyKey: string,
 ): Promise<void> => {
   await deliverMutation(
     options,
     "move_task",
     idempotencyKey,
-    { bucketId: bucket },
+    { bucketId: bucket, expectedBucketId: expectedBucket },
     async () => {
       await options.gateway.moveTask(options.job.taskId, bucket);
       return null;
@@ -203,6 +204,7 @@ export const createVikunjaQuestionUi = (
     await moveTask(
       options,
       options.layout.buckets.Waiting.id,
+      options.layout.buckets.Running.id,
       `job:${options.job.id}:question:${question.id}:waiting`,
     );
     await options.store.transition(options.job.id, { state: "waiting" });
@@ -275,6 +277,7 @@ export const createVikunjaQuestionUi = (
             await moveTask(
               options,
               options.layout.buckets.Running.id,
+              options.layout.buckets.Waiting.id,
               `job:${options.job.id}:question:${question.id}:running`,
             );
             await options.store.transition(options.job.id, {

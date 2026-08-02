@@ -48,6 +48,8 @@ export interface ResumeJobsInput {
   readonly config: RunnerConfig;
   readonly runtime: OnceRuntime;
   readonly layouts: ReadonlyMap<ProjectId, ProjectLayout>;
+  /** Jobs whose remote state was unavailable during startup reconciliation. */
+  readonly deferredJobIds?: readonly Job["id"][];
   readonly logError: (error: Error) => void;
   readonly signal?: AbortSignal;
 }
@@ -105,8 +107,9 @@ const startAnalytics = async (config: RunnerConfig): Promise<AnalyticsBridge> =>
 export const defaultResumeJobs = async (
   input: ResumeJobsInput,
 ): Promise<number> => {
+  const deferred = new Set(input.deferredJobIds ?? []);
   const jobs = (await input.runtime.store.recoverableJobs()).filter(
-    (job) => job.state === "running",
+    (job) => job.state === "running" && !deferred.has(job.id),
   );
   let resumed = 0;
   for (const job of jobs) {
@@ -399,6 +402,9 @@ export const runDaemon = async (
       config,
       runtime,
       layouts,
+      ...(reconciliation.deferredJobIds === undefined
+        ? {}
+        : { deferredJobIds: reconciliation.deferredJobIds }),
       logError: dependencies.logError,
       signal,
     });

@@ -220,4 +220,52 @@ describe("runPollCycle", () => {
     expect(report.execution).toBeNull();
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it("refreshes the heartbeat while a claimed execution is still active", async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, gateway } = dependencies();
+      let release: (() => void) | undefined;
+      const execute = vi.fn(
+        () =>
+          new Promise<{
+            job: Job;
+            goal: string;
+            handle: never;
+            verification: never;
+            publish: never;
+          }>((resolve) => {
+            release = () =>
+              resolve({
+                job: { ...job, state: "review" },
+                goal: "goal",
+                handle: undefined as never,
+                verification: undefined as never,
+                publish: undefined as never,
+              });
+          }),
+      );
+      const pending = runPollCycle({
+        projects: { "42": project },
+        store,
+        gateway,
+        ownerUserId: 1 as never,
+        runnerUserId: 2 as never,
+        repository: noopRepository,
+        conductor: noopConductor as never,
+        uiForJob: () => noopUi,
+        execute,
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(store.recordHeartbeat).toHaveBeenCalledTimes(2);
+      release?.();
+      await pending;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

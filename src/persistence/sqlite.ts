@@ -448,17 +448,34 @@ export class SqliteJobStore implements JobStore {
     try {
       const previous = this.database
         .prepare(
-          "SELECT COALESCE(MAX(attempt), 0) AS attempt FROM jobs WHERE task_id = ?",
+          `SELECT attempt, branch, worktree
+           FROM jobs
+           WHERE task_id = ?
+           ORDER BY attempt DESC
+           LIMIT 1`,
         )
-        .get(task.id) as { attempt: number };
-      const attempt = asInteger(previous.attempt, "attempt") + 1;
+        .get(task.id) as
+        | { attempt: number; branch: string | null; worktree: string | null }
+        | undefined;
+      const attempt =
+        (previous === undefined ? 0 : asInteger(previous.attempt, "attempt")) +
+        1;
       this.database
         .prepare(
           `INSERT INTO jobs
            (id, task_id, project_id, attempt, state, branch, worktree, conductor_run_id, created_at, updated_at, terminal_error_code)
-           VALUES (?, ?, ?, ?, 'claiming', NULL, NULL, NULL, ?, ?, NULL)`,
+           VALUES (?, ?, ?, ?, 'claiming', ?, ?, NULL, ?, ?, NULL)`,
         )
-        .run(id, task.id, task.projectId, attempt, timestamp, timestamp);
+        .run(
+          id,
+          task.id,
+          task.projectId,
+          attempt,
+          previous?.branch ?? null,
+          previous?.worktree ?? null,
+          timestamp,
+          timestamp,
+        );
       this.database.exec("COMMIT");
       return this.getJobSync(id);
     } catch (error) {

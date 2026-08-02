@@ -58,6 +58,18 @@ export interface RunnerCycleReport {
   readonly execution: ExecuteClaimedJobResult | null;
 }
 
+const HEARTBEAT_REFRESH_INTERVAL_MS = 30_000;
+
+const startHeartbeatRefresh = (store: JobStore): (() => void) => {
+  const timer = setInterval(() => {
+    void store.recordHeartbeat().catch(() => {
+      // The next poll will retry the liveness write; never interrupt a live job.
+    });
+  }, HEARTBEAT_REFRESH_INTERVAL_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+};
+
 const execute: ClaimedJobExecutor = async (input) =>
   executeClaimedJob({
     job: input.job,
@@ -83,14 +95,9 @@ const execute: ClaimedJobExecutor = async (input) =>
  * Re-reading the task and layout after claiming prevents stale polling data
  * from becoming conductor input. Spec §§6, 8-13 and 19.
  */
-export const runPollCycle = async (
+const runPollCycleWithoutHeartbeat = async (
   input: RunnerCycleInput,
 ): Promise<RunnerCycleReport> => {
-  // Keep the operational liveness marker in the same durable store as claims.
-  // The guard preserves compatibility with lightweight boundary fakes.
-  if (typeof input.store.recordHeartbeat === "function") {
-    await input.store.recordHeartbeat();
-  }
   const poll = await pollOnce({
     projects: input.projects,
     store: input.store,
@@ -176,4 +183,21 @@ export const runPollCycle = async (
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   return { poll, execution };
+};
+
+/** Run one cycle while keeping the durable liveness marker fresh during execution. */
+export const runPollCycle = async (
+  input: RunnerCycleInput,
+): Promise<RunnerCycleReport> => {
+  // Keep the operational liveness marker in the same durable store as claims.
+  // The guard preserves compatibility with lightweight boundary fakes.
+  if (typeof input.store.recordHeartbeat === "function") {
+    await input.store.recordHeartbeat();
+  }
+  const stopHeartbeatRefresh = startHeartbeatRefresh(input.store);
+  try {
+    return await runPollCycleWithoutHeartbeat(input);
+  } finally {
+    stopHeartbeatRefresh();
+  }
 };

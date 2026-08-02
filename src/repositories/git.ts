@@ -346,6 +346,15 @@ export class GitRepositoryManager {
     const realRepository = await realpath(repository);
     this.assertConfined(this.dataDir, realRepository, "repository");
     await this.git.run(["rev-parse", "--git-dir"], realRepository);
+    const configuredRemote = await this.git.run(
+      ["remote", "get-url", "origin"],
+      realRepository,
+    );
+    if (configuredRemote !== project.repository) {
+      throw new RepositoryPrepareError(
+        `existing repository origin does not match configured repository ${project.repository}`,
+      );
+    }
     await this.git.run(["fetch", "--prune", "origin"], realRepository);
   }
 

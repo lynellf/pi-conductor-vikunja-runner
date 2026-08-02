@@ -316,6 +316,7 @@ describe("reconcileStartup", () => {
       jobsFailed: 0,
       questionsInterrupted: 0,
       manualOverrides: 0,
+      deferredJobIds: [claimed.id],
     });
     expect((await store.getJob(claimed.id))?.state).toBe("running");
     expect(await store.recoverableJobs()).toHaveLength(1);
@@ -458,7 +459,7 @@ describe("reconcileStartup", () => {
       taskId: taskId(20),
       operation: "move_task",
       idempotencyKey: "job:move:20",
-      request: { bucketId: 5 },
+      request: { bucketId: 5, expectedBucketId: 3 },
     });
     await store.recordMutationIntent({
       jobId: claimed.id,

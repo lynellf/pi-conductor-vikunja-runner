@@ -9,7 +9,77 @@
   },
   "status": "active",
   "candidate_complete": false,
-  "active_slice": null,
+  "active_slice": {
+    "id": "S-047",
+    "objective": "Resolve all six outstanding PR #1 review findings covering Vikunja move semantics, stale mutation replay, startup resume safety, retry artifact preservation, repository identity, and active heartbeat liveness.",
+    "source_refs": [
+      "PR #1 inline review comment 3699116642 (src/vikunja/http.ts)",
+      "PR #1 inline review comment 3699116644 (src/domain/reconciliation.ts)",
+      "PR #1 inline review comment 3699116648 (src/domain/reconciliation.ts)",
+      "PR #1 inline review comment 3699116654 (src/persistence/sqlite.ts)",
+      "PR #1 inline review comment 3699116662 (src/repositories/git.ts)",
+      "PR #1 inline review comment 3699116669 (src/domain/runner.ts)",
+      "docs/pi-conductor-vikunja-runner-spec.md §§8, 13, 14, 16, 19, 21, 23"
+    ],
+    "acceptance_checks": [
+      {
+        "id": "S-047-A1",
+        "statement": "Vikunja bucket moves use PUT and the HTTP regression asserts the emitted method.",
+        "evidence": "tests/vikunja-http.test.ts passes; move request is asserted as PUT."
+      },
+      {
+        "id": "S-047-A2",
+        "statement": "Every newly created move intent carries an expected source bucket, and startup replay refuses legacy unguarded move intents instead of mutating remote state.",
+        "evidence": "claiming, question, startup compensation, completion-failure, and Review-transition paths persist expectedBucketId; tests/reconciliation.test.ts passes guarded override and malformed-intent coverage."
+      },
+      {
+        "id": "S-047-A3",
+        "statement": "A startup remote-task read failure records the job as deferred and default resume excludes that job from the same startup pass.",
+        "evidence": "tests/reconciliation.test.ts asserts deferredJobIds and recoverable state; runDaemon forwards the deferred IDs to defaultResumeJobs."
+      },
+      {
+        "id": "S-047-A4",
+        "statement": "Retry claims inherit the latest attempt branch and worktree, independent of a renamed task title.",
+        "evidence": "tests/persistence-sqlite.test.ts passes the persisted branch/worktree retry regression."
+      },
+      {
+        "id": "S-047-A5",
+        "statement": "An existing project clone is rejected when origin does not exactly match the configured repository.",
+        "evidence": "tests/repositories-git.test.ts passes the changed-origin regression."
+      },
+      {
+        "id": "S-047-A6",
+        "statement": "Heartbeat writes continue on an independent timer until the active poll/execution cycle settles, and the timer is cleaned up.",
+        "evidence": "tests/runner-cycle.test.ts passes the active-execution heartbeat refresh regression and timer cleanup assertion."
+      }
+    ],
+    "implementation_status": "ready-for-review",
+    "review_status": "not-reviewed",
+    "files_changed": [
+      "src/vikunja/http.ts",
+      "tests/vikunja-http.test.ts",
+      "src/domain/reconciliation.ts",
+      "tests/reconciliation.test.ts",
+      "src/domain/claiming.ts",
+      "src/vikunja/interaction-ui.ts",
+      "src/persistence/sqlite.ts",
+      "tests/persistence-sqlite.test.ts",
+      "src/repositories/git.ts",
+      "tests/repositories-git.test.ts",
+      "src/domain/orchestration.ts",
+      "src/domain/runner.ts",
+      "tests/runner-cycle.test.ts",
+      "src/cli/run.ts"
+    ],
+    "tests_run": [
+      "pnpm vitest run tests/vikunja-http.test.ts tests/reconciliation.test.ts tests/persistence-sqlite.test.ts tests/repositories-git.test.ts tests/runner-cycle.test.ts tests/run.test.ts",
+      "pnpm test (31 files, 167 tests passed)",
+      "pnpm typecheck",
+      "pnpm lint",
+      "git diff --check"
+    ],
+    "findings": []
+  },
   "approved_slices": [
     {
       "id": "S-046",
@@ -521,7 +591,7 @@
     }
   ],
   "worktree": {
-    "branch": "main",
+    "branch": "feature/v1-runner",
     "baseline_commit": "581f5c291da73dea260711c384d573fb0f829f66d",
     "preexisting_changes": [
       {
@@ -641,10 +711,17 @@
       "Validation completion: runner:validate now checks analytics configuration, shallow-cloned repository/default branches, conductor manifests, confined role prompts, and model registrations without mutating configured remotes.",
       "Telemetry compatibility: added real mock-HTTP delivery and outage/restart backfill coverage for lifecycle, transition, checkpoint, and file_mutation records.",
       "Operational completion: added structured redacting JSON logging, a bounded 25-second shutdown drain, analytics lifecycle for runner:once, deterministic branch reporting, enforced job-domain coverage, and operations/task-authoring documentation.",
-      "Composed workflow evidence: an SQLite-backed live ask_user integration returns the owner reply to the same conductor completion promise and reaches Review exactly once."
+      "Composed workflow evidence: an SQLite-backed live ask_user integration returns the owner reply to the same conductor completion promise and reaches Review exactly once.",
+      "S-047: changed Vikunja bucket moves to PUT and asserted the method in HTTP tests.",
+      "S-047: guarded all new move intents with expected source buckets and rejected legacy unguarded move replay without mutation.",
+      "S-047: propagated startup remote-read deferrals so unconfirmed jobs are not resumed in the same startup pass.",
+      "S-047: inherited preserved branch/worktree values into retry attempts.",
+      "S-047: verified existing clone origin matches configured repository before fetch/worktree use.",
+      "S-047: refreshed the durable heartbeat independently during active poll/execution cycles and cleaned up the timer.",
+      "S-047: guarded completion failure and Review bucket moves with the expected Running source bucket."
     ],
-    "current_protection_notes": "Preserved all inherited dirty paths, approved slices, controlling artifacts, and host-generated .pi-conductor data. This visit changed only runner source, tests, documentation, coverage configuration, and execution-state tracking required to close the remaining version-one gaps."
+    "current_protection_notes": "Preserved the controlling specification, host-generated .pi-conductor artifacts, and all prior approved implementation slices. S-047 changes are limited to the six PR #1 review findings and their regression tests; no rendered UI changed."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-02T07:48:00.000000Z"
+  "updated_at": "2026-08-02T13:25:00Z"
 }
