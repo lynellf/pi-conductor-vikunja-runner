@@ -22,6 +22,7 @@ import type { VikunjaGateway } from "../vikunja/gateway.js";
 import { VikunjaHttpGateway } from "../vikunja/http.js";
 import { createVikunjaQuestionUi } from "../vikunja/interaction-ui.js";
 import { runnerLogger } from "./logging.js";
+import { recoverRuntime } from "./recovery.js";
 import {
   readProtectedCredential,
   validateConfiguredProjects,
@@ -51,6 +52,7 @@ export interface OnceDependencies {
   readonly startOnceAnalytics: (
     config: RunnerConfig,
   ) => Promise<OnceAnalyticsLifecycle>;
+  readonly recoverStartup: typeof recoverRuntime;
   readonly runCycle: (input: RunnerCycleInput) => Promise<RunnerCycleReport>;
 }
 
@@ -108,6 +110,7 @@ const defaultDependencies: OnceDependencies = {
       configPath: config.runner.analyticsConfigPath,
       logger: runnerLogger,
     }),
+  recoverStartup: recoverRuntime,
   runCycle: runCycleDefault,
 };
 
@@ -161,6 +164,9 @@ export const runOnce = async (
     analytics = { shutdown: async () => undefined };
   }
   try {
+    await dependencies.recoverStartup(config, runtime, (error) =>
+      runnerLogger.error("runner_once_recovery_failed", error),
+    );
     return await dependencies.runCycle({
       projects: config.projects,
       store: runtime.store,

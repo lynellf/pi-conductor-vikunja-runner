@@ -73,6 +73,9 @@ describe("runner once command", () => {
         calls.push("analytics:start");
         return { shutdown: async () => calls.push("analytics:shutdown") };
       },
+      recoverStartup: async () => {
+        calls.push("recover");
+      },
       runCycle: async (input) => {
         calls.push(`cycle:${input.ownerUserId}:${input.runnerUserId}`);
         return report;
@@ -85,6 +88,7 @@ describe("runner once command", () => {
       "Analytics configuration:/run/analytics.json",
       "runtime:token",
       "analytics:start",
+      "recover",
       "cycle:1:2",
       "analytics:shutdown",
       "closed",
@@ -105,6 +109,7 @@ describe("runner once command", () => {
       startOnceAnalytics: async () => {
         throw new Error("must not start analytics without configuration");
       },
+      recoverStartup: async () => undefined,
       runCycle: async () => {
         cycled = true;
         return report;
@@ -135,6 +140,7 @@ describe("runner once command", () => {
           calls.push("runtime");
           return runtime(() => undefined);
         },
+        recoverStartup: async () => undefined,
       }),
     ).rejects.toThrow("repository cannot start");
     expect(calls).toEqual([]);
@@ -148,6 +154,7 @@ describe("runner once command", () => {
         readCredential: async () => "token",
         createRuntime: async () => runtime(() => (closed = true)),
         startOnceAnalytics: async () => ({ shutdown: async () => undefined }),
+        recoverStartup: async () => undefined,
         runCycle: async () => {
           throw new Error("cycle failed");
         },
@@ -162,6 +169,7 @@ describe("runner once command", () => {
       readCredential: async () => "token",
       createRuntime: async () => runtime(() => undefined),
       startOnceAnalytics: async () => ({ shutdown: async () => undefined }),
+      recoverStartup: async () => undefined,
       runCycle: async () => report,
     });
     expect(code).toBe(0);
