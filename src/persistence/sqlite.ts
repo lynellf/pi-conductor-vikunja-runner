@@ -736,6 +736,64 @@ export class SqliteJobStore implements JobStore {
     return this.getQuestionSync(id);
   }
 
+  public async resolveQuestionAndResume(
+    id: QuestionId,
+    responseComment: CommentId,
+    answer: string,
+  ): Promise<{ readonly question: Question; readonly job: Job }> {
+    positiveComment(responseComment, "question response comment id");
+    nonEmpty(answer, "question answer");
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.getQuestionSync(id);
+      const job = this.getJobSync(current.jobId);
+      if (current.state !== "pending") {
+        if (
+          current.state === "resolved" &&
+          current.responseCommentId === responseComment &&
+          current.answer === answer &&
+          job.state === "running"
+        ) {
+          this.database.exec("COMMIT");
+          return { question: current, job };
+        }
+        throw new Error(`question ${id} is no longer pending`);
+      }
+      if (job.state !== "waiting") {
+        throw new Error(`question job must be waiting, observed ${job.state}`);
+      }
+      const timestamp = now();
+      const questionResult = this.database
+        .prepare(
+          `UPDATE questions
+           SET response_comment_id = ?, answer = ?, state = 'resolved', updated_at = ?
+           WHERE id = ? AND state = 'pending'`,
+        )
+        .run(responseComment, answer, timestamp, id);
+      if (questionResult.changes !== 1) {
+        throw new Error(`question ${id} changed concurrently`);
+      }
+      const jobResult = this.database
+        .prepare(
+          `UPDATE jobs
+           SET state = 'running', terminal_error_code = NULL, updated_at = ?
+           WHERE id = ? AND state = 'waiting'`,
+        )
+        .run(timestamp, job.id);
+      if (jobResult.changes !== 1) {
+        throw new Error(`job ${job.id} changed concurrently`);
+      }
+      this.database.exec("COMMIT");
+      return {
+        question: this.getQuestionSync(id),
+        job: this.getJobSync(job.id),
+      };
+    } catch (error) {
+      rollback(this.database);
+      throw error;
+    }
+  }
+
   public async abortQuestion(
     id: QuestionId,
     reason = "dialog aborted",

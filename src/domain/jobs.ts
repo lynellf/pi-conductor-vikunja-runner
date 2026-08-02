@@ -81,6 +81,12 @@ export interface JobStore extends DaemonHeartbeatStore {
     responseCommentId: CommentId,
     answer: string,
   ): Promise<Question>;
+  /** Atomically resolve an accepted answer and resume its Waiting job. */
+  resolveQuestionAndResume(
+    questionId: QuestionId,
+    responseCommentId: CommentId,
+    answer: string,
+  ): Promise<{ readonly question: Question; readonly job: Job }>;
   abortQuestion(questionId: QuestionId, reason?: string): Promise<Question>;
   getCommentWatermark(taskId: TaskId): Promise<CommentId | null>;
   recordCommentWatermark(taskId: TaskId, commentId: CommentId): Promise<void>;

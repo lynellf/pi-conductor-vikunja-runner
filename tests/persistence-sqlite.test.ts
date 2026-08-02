@@ -346,6 +346,67 @@ describe("SqliteJobStore", () => {
     expect(await store.getActiveQuestion(claimed.id)).toBeNull();
   });
 
+  it("atomically resolves a question and resumes its Waiting job", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(23));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    await store.transition(claimed.id, { state: "waiting" });
+    const question = await store.createQuestion({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      kind: "input",
+      prompt: "Continue?",
+      commentWatermark: null,
+    });
+
+    const resolved = await store.resolveQuestionAndResume(
+      question.id,
+      commentId(9),
+      "continue",
+    );
+
+    expect(resolved.question).toMatchObject({
+      state: "resolved",
+      responseCommentId: commentId(9),
+      answer: "continue",
+    });
+    expect(resolved.job).toMatchObject({ state: "running" });
+    expect(await store.getQuestion(question.id)).toMatchObject({
+      state: "resolved",
+    });
+    expect(await store.getJob(claimed.id)).toMatchObject({ state: "running" });
+  });
+
+  it("does not resolve a question when its job cannot resume", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(24));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    await store.transition(claimed.id, { state: "waiting" });
+    const question = await store.createQuestion({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      kind: "input",
+      prompt: "Continue?",
+      commentWatermark: null,
+    });
+    await store.transition(claimed.id, {
+      state: "failed",
+      terminalErrorCode: "WAIT_INTERRUPTED",
+    });
+
+    await expect(
+      store.resolveQuestionAndResume(question.id, commentId(10), "continue"),
+    ).rejects.toThrow("question job must be waiting");
+
+    expect(await store.getQuestion(question.id)).toMatchObject({
+      state: "pending",
+      responseCommentId: null,
+      answer: null,
+    });
+  });
+
   it("persists a bounded abort reason across reopen", async () => {
     const directory = await mkdtemp(join(tmpdir(), "vikunja-runner-abort-"));
     const path = join(directory, "state.sqlite");

@@ -69,6 +69,7 @@ interface FakeState {
   readonly watermarks: number[];
   readonly mutationKeys: string[];
   readonly failedMutationKeys: string[];
+  atomicResolutions: number;
   currentJob: Job;
   activeQuestion: Question;
   remoteBucket: ReturnType<typeof bucketId>;
@@ -86,6 +87,7 @@ const makeDependencies = (
     watermarks: [],
     mutationKeys: [],
     failedMutationKeys: [],
+    atomicResolutions: 0,
     currentJob: job,
     activeQuestion: question(kind, options),
     remoteBucket: layout.buckets.Running.id,
@@ -142,6 +144,22 @@ const makeDependencies = (
         state: "resolved",
       };
       return state.activeQuestion;
+    },
+    async resolveQuestionAndResume(
+      _id: Question["id"],
+      responseId: ReturnType<typeof commentId>,
+      answer: string,
+    ) {
+      state.atomicResolutions += 1;
+      state.activeQuestion = {
+        ...state.activeQuestion,
+        responseCommentId: responseId,
+        answer,
+        state: "resolved",
+      };
+      state.transitions.push("running");
+      state.currentJob = { ...state.currentJob, state: "running" };
+      return { question: state.activeQuestion, job: state.currentJob };
     },
     async abortQuestion(_id: Question["id"], reason?: string) {
       state.activeQuestion = {
@@ -224,6 +242,7 @@ describe("createVikunjaQuestionUi", () => {
     expect(dependencies.state.moves).toEqual([4, 3]);
     expect(dependencies.state.transitions).toEqual(["waiting", "running"]);
     expect(dependencies.state.activeQuestion.state).toBe("resolved");
+    expect(dependencies.state.atomicResolutions).toBe(1);
     expect(dependencies.state.watermarks).toEqual([2]);
     expect(dependencies.state.comments[0]).toContain(
       "pi-runner:question:question-1",

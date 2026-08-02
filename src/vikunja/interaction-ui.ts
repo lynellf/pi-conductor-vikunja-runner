@@ -326,14 +326,11 @@ export const createVikunjaQuestionUi = (
               `job:${options.job.id}:question:${question.id}:running`,
               signal,
             );
-            await options.store.resolveQuestion(
+            await options.store.resolveQuestionAndResume(
               question.id,
               comment.id,
               result.answer,
             );
-            await options.store.transition(options.job.id, {
-              state: "running",
-            });
             return result.answer;
           }
           const correctionKey = `job:${options.job.id}:question:${question.id}:correction:${comment.id}`;
