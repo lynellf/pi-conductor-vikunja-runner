@@ -181,7 +181,38 @@ const mutation = async (
       );
       throw new Error(`remote mutation ${key} was superseded`);
     }
-    await input.gateway.moveTask(input.job.taskId, bucketId(bucket));
+    try {
+      await input.gateway.moveTask(input.job.taskId, bucketId(bucket));
+    } catch (error) {
+      // A lost or malformed response is ambiguous: Vikunja may have applied
+      // the move. Confirm the target state before allowing the caller to make
+      // the local job terminal and suppress this intent during reconciliation.
+      let observed: CodingTask;
+      try {
+        observed = await input.gateway.getTask(input.job.taskId);
+      } catch {
+        throw error;
+      }
+      if (
+        observed.projectId === input.job.projectId &&
+        !observed.done &&
+        observed.bucketId === bucket
+      ) {
+        await input.store.completeMutation(key, null);
+        return null;
+      }
+      if (
+        observed.projectId !== input.job.projectId ||
+        observed.done ||
+        observed.bucketId !== expectedBucket
+      ) {
+        await input.store.failMutation(
+          key,
+          `task state superseded move (project ${observed.projectId}, bucket ${observed.bucketId}, done=${observed.done})`,
+        );
+      }
+      throw error;
+    }
   } else {
     const body = request.body;
     if (typeof body !== "string") throw new Error("invalid comment body");

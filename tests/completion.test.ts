@@ -660,6 +660,49 @@ describe("completeConductorJob", () => {
     );
   });
 
+  it("treats an ambiguously applied Review move as successful", async () => {
+    const dependencies = makeInput();
+    let remoteBucket = layout.buckets.Running.id;
+    dependencies.input.gateway = {
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: remoteBucket,
+          done: false,
+        };
+      },
+      async moveTask(_taskId: unknown, bucket: unknown) {
+        remoteBucket = bucketId(bucket as number);
+        dependencies.events.push(`move:${bucket}`);
+        throw new Error("response lost after move");
+      },
+      async postComment(_taskId: unknown, body: string) {
+        dependencies.events.push(`comment:${body.includes("Review ready")}`);
+        return 101;
+      },
+    } as CompleteConductorJobInput["gateway"];
+
+    const result = await completeConductorJob(dependencies.input);
+
+    expect(result.job.state).toBe("review");
+    expect(remoteBucket).toBe(layout.buckets.Review.id);
+    expect(
+      dependencies.mutations.get("job:job-1:completion:move-review"),
+    ).toMatchObject({ state: "succeeded" });
+    expect(dependencies.events).toEqual([
+      "completion",
+      "verify",
+      "publish",
+      "comment:true",
+      "move:5",
+      "transition:review",
+    ]);
+  });
+
   it("uses PUBLISH_FAILED when the configured push fails", async () => {
     const dependencies = makeInput();
     dependencies.input.repository = {
