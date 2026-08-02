@@ -60,8 +60,31 @@ export async function reconcileStartup(
   let mutationsReplayed = 0;
   let mutationsPending = 0;
   let mutationFailures = 0;
+  // Pending questions cannot be resumed because their in-memory ask_user calls
+  // no longer exist. Suppress undelivered prompts and corrections before
+  // replaying mutations so startup does not publish a question it immediately
+  // aborts below.
+  const questions = await input.store.pendingQuestions();
+  const abandonedQuestionPrefixes = questions.map(
+    (question) => `job:${question.jobId}:question:${question.id}:`,
+  );
   for (const intent of await input.store.pendingMutationIntents()) {
     try {
+      const abandonedQuestionComment =
+        intent.operation === "post_comment" &&
+        abandonedQuestionPrefixes.some(
+          (prefix) =>
+            intent.idempotencyKey === `${prefix}comment` ||
+            intent.idempotencyKey.startsWith(`${prefix}correction:`),
+        );
+      if (abandonedQuestionComment) {
+        await input.store.failMutation(
+          intent.idempotencyKey,
+          "question comment belongs to an interrupted live dialog",
+        );
+        mutationFailures += 1;
+        continue;
+      }
       // Once a job is terminally failed, only a guarded move into its Failed
       // bucket remains applicable. Any other pending move belongs to an
       // earlier lifecycle stage (for example Ready -> Running or Running ->
@@ -145,7 +168,6 @@ export async function reconcileStartup(
   }
 
   const jobs = await input.store.recoverableJobs();
-  const questions = await input.store.pendingQuestions();
   const questionsByJob = new Map(
     questions.map((question) => [question.jobId, question]),
   );

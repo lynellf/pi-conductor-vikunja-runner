@@ -322,6 +322,73 @@ describe("reconcileStartup", () => {
     expect(comments[0]).toContain("WAIT_INTERRUPTED");
   });
 
+  it("suppresses pending question prompts before aborting an interrupted dialog", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    await store.transition(claimed.id, { state: "running" });
+    const question = await store.createQuestion({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      kind: "input",
+      prompt: "Which approach?",
+      commentWatermark: null,
+    });
+    const promptKey = `job:${claimed.id}:question:${question.id}:comment`;
+    const correctionKey = `job:${claimed.id}:question:${question.id}:correction:249`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "post_comment",
+      idempotencyKey: promptKey,
+      request: { body: "Unanswerable question prompt" },
+    });
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "post_comment",
+      idempotencyKey: correctionKey,
+      request: { body: "Unanswerable response correction" },
+    });
+    let remote = task(3);
+    const comments: string[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => remote,
+      moveTask: async (_taskId, bucket) => {
+        remote = { ...remote, bucketId: bucket };
+      },
+      listComments: async () => [],
+      postComment: async (_taskId, body) => {
+        comments.push(body);
+        return commentId(250 + comments.length);
+      },
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({
+      questionsInterrupted: 1,
+      mutationsReplayed: 0,
+      mutationFailures: 2,
+    });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain("WAIT_INTERRUPTED");
+    expect(comments[0]).not.toContain("Unanswerable question prompt");
+    expect(await store.getMutationIntent(promptKey)).toMatchObject({
+      state: "failed",
+    });
+    expect(await store.getMutationIntent(correctionKey)).toMatchObject({
+      state: "failed",
+    });
+  });
+
   it("atomically persists question interruption compensation before delivery", async () => {
     const store = await openStore();
     const claimed = await store.tryClaim(task(2));
