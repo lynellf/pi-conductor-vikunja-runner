@@ -178,10 +178,11 @@ describe("runner daemon", () => {
     expect(errors[0]?.message).toContain("analytics unavailable");
   });
 
-  it("stops after the shutdown timeout when an active cycle does not drain", async () => {
+  it("keeps runtime resources open after a cycle drain timeout until the cycle settles", async () => {
     const controller = new AbortController();
     let closed = false;
     let analyticsStopped = false;
+    let finishCycle: (() => void) | undefined;
     const errors: Error[] = [];
     const dependencies: Partial<DaemonDependencies> = {
       loadConfig: async () => config(),
@@ -208,7 +209,10 @@ describe("runner daemon", () => {
         mutationFailures: 0,
       }),
       resumeJobs: async () => 0,
-      runCycle: async () => new Promise<RunnerCycleReport>(() => undefined),
+      runCycle: () =>
+        new Promise<RunnerCycleReport>((resolve) => {
+          finishCycle = () => resolve(report);
+        }),
       shutdownTimeoutMilliseconds: 1,
       logError: (error) => errors.push(error),
     };
@@ -218,14 +222,21 @@ describe("runner daemon", () => {
       dependencies,
       controller.signal,
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    while (finishCycle === undefined) await Promise.resolve();
     controller.abort("shutdown");
-    const result = await running;
+    while (errors.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
 
+    expect(closed).toBe(false);
+    expect(analyticsStopped).toBe(false);
+    expect(errors[0]?.message).toContain("shutdown timeout");
+
+    finishCycle();
+    const result = await running;
     expect(result.cycles).toBe(1);
     expect(closed).toBe(true);
     expect(analyticsStopped).toBe(true);
-    expect(errors[0]?.message).toContain("shutdown timeout");
   });
 
   it("rejects unsafe project Git values before reading credentials", async () => {

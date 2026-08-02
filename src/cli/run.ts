@@ -67,7 +67,7 @@ export interface DaemonDependencies extends OnceDependencies {
   readonly sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   /** Return a bounded positive delay to avoid synchronized polling. */
   readonly pollJitterMilliseconds: () => number;
-  /** Maximum time to drain an active cycle and analytics after shutdown. */
+  /** Time before warning that active-cycle or analytics shutdown is slow. */
   readonly shutdownTimeoutMilliseconds: number;
   readonly logError: (error: Error) => void;
 }
@@ -437,6 +437,9 @@ export const runDaemon = async (
           dependencies.logError(
             new Error("runner shutdown timeout expired while draining a cycle"),
           );
+          // Promise.race does not cancel the cycle. Keep its runtime resources
+          // alive until shutdown propagation actually stops and settles it.
+          await cycle;
           break;
         }
       } catch (error) {
