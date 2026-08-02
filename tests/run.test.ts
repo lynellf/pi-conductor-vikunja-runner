@@ -16,7 +16,7 @@ import {
   taskId,
 } from "../src/domain/types.js";
 
-const config = (): RunnerConfig =>
+const config = (maxCommentChars = 12000): RunnerConfig =>
   parseConfig({
     version: 1,
     vikunja: {
@@ -34,7 +34,7 @@ const config = (): RunnerConfig =>
       global_concurrency: 1,
       agent_dir: "/var/lib/runner/pi-agent",
       analytics_config_path: "/run/analytics.json",
-      max_comment_chars: 12000,
+      max_comment_chars: maxCommentChars,
     },
     projects: {
       "42": {
@@ -622,6 +622,166 @@ describe("runner daemon", () => {
     expect(moves).toEqual([6]);
     expect(comments[0]).toContain(terminalErrorCode);
     expect(errors).toHaveLength(1);
+  });
+
+  it("applies the configured comment limit to recovered completion reports", async () => {
+    const maxCommentChars = 120;
+    const limitedConfig = config(maxCommentChars);
+    const project = limitedConfig.projects["42"];
+    if (project === undefined) throw new Error("test project missing");
+    const recoveredJob: Job = {
+      id: "job-resumed-report" as Job["id"],
+      taskId: taskId(12),
+      projectId: projectId(42),
+      attempt: 1,
+      state: "running",
+      branch: "pi/vikunja-12-resumed",
+      worktree: "/var/lib/runner/jobs/12/worktree",
+      conductorRunId: "run-resumed",
+      createdAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+      terminalErrorCode: null,
+    };
+    const resumedLayout: ProjectLayout = {
+      viewId: project.kanbanViewId,
+      buckets: {
+        Backlog: { id: bucketId(1), title: "Backlog", position: 0 },
+        Ready: { id: bucketId(2), title: "Ready", position: 1 },
+        Running: { id: bucketId(3), title: "Running", position: 2 },
+        Waiting: { id: bucketId(4), title: "Waiting", position: 3 },
+        Review: { id: bucketId(5), title: "Review", position: 4 },
+        Failed: { id: bucketId(6), title: "Failed", position: 5 },
+        Done: { id: bucketId(7), title: "Done", position: 6 },
+      },
+      defaultBucketId: bucketId(1),
+      doneBucketId: bucketId(7),
+    };
+    let persisted = recoveredJob;
+    const comments: string[] = [];
+    const mutations = new Map<
+      string,
+      { state: "pending" | "succeeded"; remoteId: string | null }
+    >();
+    const store = {
+      async recoverableJobs() {
+        return [recoveredJob];
+      },
+      async getJob() {
+        return persisted;
+      },
+      async transition(
+        _id: Job["id"],
+        transition: Parameters<JobStore["transition"]>[1],
+      ) {
+        persisted = { ...persisted, state: transition.state } as Job;
+        return persisted;
+      },
+      async recordMutationIntent(input: { idempotencyKey: string }) {
+        const existing = mutations.get(input.idempotencyKey);
+        if (existing !== undefined) return { ...input, ...existing };
+        const intent = { state: "pending" as const, remoteId: null };
+        mutations.set(input.idempotencyKey, intent);
+        return { ...input, ...intent };
+      },
+      async completeMutation(key: string, remoteId: string | null) {
+        const intent = { state: "succeeded" as const, remoteId };
+        mutations.set(key, intent);
+        return { idempotencyKey: key, ...intent };
+      },
+      async getCommentWatermark() {
+        return null;
+      },
+      async recordCommentWatermark() {},
+      async recordHeartbeat() {},
+    } as unknown as JobStore;
+    const gateway = {
+      async getTask() {
+        return {
+          id: recoveredJob.taskId,
+          projectId: recoveredJob.projectId,
+          title: "Resumed task",
+          description: "",
+          priority: 1,
+          position: 1,
+          bucketId: resumedLayout.buckets.Running.id,
+          done: false,
+        };
+      },
+      async listComments() {
+        return [];
+      },
+      async moveTask() {},
+      async postComment(_taskId: unknown, body: string) {
+        comments.push(body);
+        return 501 as never;
+      },
+    } as OnceRuntime["gateway"];
+    const resumed = await defaultResumeJobs({
+      config: limitedConfig,
+      runtime: {
+        store,
+        gateway,
+        repository: {
+          async prepare() {
+            return {
+              repository: "/var/lib/runner/repositories/42/repo",
+              branch: recoveredJob.branch ?? "",
+              worktree: recoveredJob.worktree ?? "",
+            };
+          },
+          async verify() {
+            return {
+              passed: true,
+              latestCommit: "abc123",
+              commands: [],
+              worktreeClean: true,
+              uncommittedFiles: [],
+            };
+          },
+          async publish() {
+            return {
+              pushed: false,
+              remote: null,
+              branch: recoveredJob.branch ?? "",
+            };
+          },
+        } as OnceRuntime["repository"],
+        conductor: {
+          async resume() {
+            return {
+              runId: "run-resumed",
+              async completion() {
+                return { exitReason: "done" as const };
+              },
+              latestResponse() {
+                return {
+                  text: "x".repeat(500),
+                };
+              },
+              runStats() {
+                return {
+                  state: "done",
+                  exitReason: "done",
+                  recordsCount: 1,
+                  transitionHistory: [],
+                };
+              },
+            } as never;
+          },
+        },
+        close: () => undefined,
+      },
+      layouts: new Map([[project.id, resumedLayout]]),
+      logError: (error) => {
+        throw error;
+      },
+    });
+
+    expect(resumed).toBe(1);
+    const reviewComment = comments.find((body) =>
+      body.includes("Review ready"),
+    );
+    expect(reviewComment).toHaveLength(maxCommentChars);
   });
 
   it("refreshes the heartbeat while a recovered conductor run is active", async () => {

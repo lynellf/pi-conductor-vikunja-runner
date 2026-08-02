@@ -253,17 +253,11 @@ const deliverStartMilestone = async (
 const reportClaimConflict = async (
   input: ClaimTaskInput,
   job: Job,
-  current: CodingTask,
+  idempotencyKey: string,
+  body: string,
 ): Promise<void> => {
-  const idempotencyKey = `job:${job.id}:claim:conflict`;
   try {
-    await deliverCommentMilestone(
-      input,
-      job,
-      "failure",
-      idempotencyKey,
-      `[pi-runner][idempotency:${idempotencyKey}] CLAIM_CONFLICT: task state changed before the claim could start (observed project ${current.projectId}, bucket ${current.bucketId}, done=${current.done}). The runner preserved the selected state; move the task to Ready to retry.`,
-    );
+    await deliverCommentMilestone(input, job, "failure", idempotencyKey, body);
   } catch {
     // Keep the durable milestone/mutation pending for startup reconciliation.
   }
@@ -294,11 +288,25 @@ export const claimReadyTask = async (
     current.done ||
     current.bucketId !== input.layout.buckets.Ready.id
   ) {
-    const conflicted = await input.store.transition(job.id, {
-      state: "failed",
-      terminalErrorCode: "CLAIM_CONFLICT",
-    });
-    await reportClaimConflict(input, conflicted, current);
+    const idempotencyKey = `job:${job.id}:claim:conflict`;
+    const body = truncate(
+      `[pi-runner][idempotency:${idempotencyKey}] CLAIM_CONFLICT: task state changed before the claim could start (observed project ${current.projectId}, bucket ${current.bucketId}, done=${current.done}). The runner preserved the selected state; move the task to Ready to retry.`,
+      input.maxCommentChars ?? 12000,
+    );
+    const conflicted = await input.store.recordTerminalFailure(
+      job.id,
+      "CLAIM_CONFLICT",
+      [
+        {
+          jobId: job.id,
+          taskId: job.taskId,
+          operation: "post_comment",
+          idempotencyKey,
+          request: { body },
+        },
+      ],
+    );
+    await reportClaimConflict(input, conflicted, idempotencyKey, body);
     return { status: "conflict", job: conflicted };
   }
 

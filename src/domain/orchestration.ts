@@ -22,6 +22,7 @@ import {
   type CodingTask,
   type CommentId,
   type ProjectLayout,
+  type TaskComment,
   type UserId,
 } from "./types.js";
 
@@ -77,7 +78,8 @@ export interface CompleteConductorJobInput {
   readonly gateway: Pick<
     VikunjaGateway,
     "getTask" | "moveTask" | "postComment"
-  >;
+  > &
+    Partial<Pick<VikunjaGateway, "listComments">>;
   readonly maxCommentChars?: number;
   /** Cancellation requested by an owner command or daemon shutdown. */
   readonly cancellationSignal?: AbortSignal;
@@ -228,7 +230,31 @@ const mutation = async (
   } else {
     const body = request.body;
     if (typeof body !== "string") throw new Error("invalid comment body");
-    remoteId = String(await input.gateway.postComment(input.job.taskId, body));
+    try {
+      remoteId = String(
+        await input.gateway.postComment(input.job.taskId, body),
+      );
+    } catch (error) {
+      // A transport or response-validation failure can hide a successful
+      // Vikunja write. Reconcile the stable marker before failing an otherwise
+      // completed job and compensating it out of Review.
+      let delivered: TaskComment | undefined;
+      try {
+        if (input.gateway.listComments === undefined) throw error;
+        const comments = await input.gateway.listComments(
+          input.job.taskId,
+          null,
+        );
+        const marker = `[idempotency:${key}]`;
+        delivered = comments.find(
+          (comment) => comment.body === body || comment.body.includes(marker),
+        );
+      } catch {
+        throw error;
+      }
+      if (delivered === undefined) throw error;
+      remoteId = String(delivered.id);
+    }
   }
   await input.store.completeMutation(key, remoteId);
   return remoteId;
@@ -469,7 +495,8 @@ export interface ReportTerminalJobFailureInput {
   readonly gateway: Pick<
     VikunjaGateway,
     "getTask" | "moveTask" | "postComment"
-  >;
+  > &
+    Partial<Pick<VikunjaGateway, "listComments">>;
   readonly expectedBucketId: BucketId;
   readonly detail: string;
   readonly maxCommentChars?: number;
@@ -916,6 +943,7 @@ export const executeClaimedJob = async (
           store: input.store,
           gateway: {
             getTask: input.gateway.getTask,
+            listComments: input.gateway.listComments,
             moveTask: input.gateway.moveTask,
             postComment: input.gateway.postComment,
           },

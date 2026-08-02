@@ -8,7 +8,13 @@ import {
   JobCompletionError,
 } from "../src/domain/orchestration.js";
 import type { ProjectLayout } from "../src/domain/types.js";
-import { bucketId, projectId, taskId, viewId } from "../src/domain/types.js";
+import {
+  bucketId,
+  commentId,
+  projectId,
+  taskId,
+  viewId,
+} from "../src/domain/types.js";
 import type {
   PreparedWorktree,
   PublishResult,
@@ -170,6 +176,9 @@ const makeInput = (overrides: Record<string, unknown> = {}) => {
     },
     async moveTask(_taskId: unknown, bucket: unknown) {
       events.push(`move:${bucket}`);
+    },
+    async listComments() {
+      return [];
     },
     async postComment(_taskId: unknown, body: string) {
       events.push(`comment:${body.includes("Review ready")}`);
@@ -741,6 +750,58 @@ describe("completeConductorJob", () => {
     expect(dependencies.mutations.get("job:job-1:completion:move-review")).toBe(
       undefined,
     );
+  });
+
+  it("reconciles an ambiguously delivered Review report before moving the task", async () => {
+    const dependencies = makeInput();
+    const deliveredComments: Array<{
+      id: ReturnType<typeof commentId>;
+      body: string;
+    }> = [];
+    dependencies.input.gateway = {
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: layout.buckets.Running.id,
+          done: false,
+        };
+      },
+      async listComments() {
+        return deliveredComments.map((comment) => ({
+          ...comment,
+          authorId: 2 as never,
+          createdAt: "2026-08-02T00:00:00.000Z",
+        }));
+      },
+      async moveTask(_taskId: unknown, bucket: unknown) {
+        dependencies.events.push(`move:${bucket}`);
+      },
+      async postComment(_taskId: unknown, body: string) {
+        dependencies.events.push(`comment:${body.includes("Review ready")}`);
+        deliveredComments.push({ id: commentId(101), body });
+        throw new Error("response lost after comment");
+      },
+    } as CompleteConductorJobInput["gateway"];
+
+    const result = await completeConductorJob(dependencies.input);
+
+    expect(result.job.state).toBe("review");
+    expect(deliveredComments).toHaveLength(1);
+    expect(
+      dependencies.mutations.get("job:job-1:completion:review-comment"),
+    ).toMatchObject({ state: "succeeded", remoteId: "101" });
+    expect(dependencies.events).toEqual([
+      "completion",
+      "verify",
+      "publish",
+      "comment:true",
+      "move:5",
+      "transition:review",
+    ]);
   });
 
   it("treats an ambiguously applied Review move as successful", async () => {

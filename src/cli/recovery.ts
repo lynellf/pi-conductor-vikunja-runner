@@ -150,6 +150,7 @@ export const defaultResumeJobs = async (
           store: input.runtime.store,
           repository: input.runtime.repository,
           gateway: input.runtime.gateway,
+          maxCommentChars: input.config.runner.maxCommentChars,
           cancellationSignal,
         });
         resumed += 1;

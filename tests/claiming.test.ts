@@ -221,6 +221,17 @@ describe("claimReadyTask", () => {
     expect(store.transitions).toEqual([
       { state: "failed", terminalErrorCode: "CLAIM_CONFLICT" },
     ]);
+    expect(store.terminalFailureIntents).toEqual([
+      expect.objectContaining({
+        jobId: job.id,
+        taskId: job.taskId,
+        operation: "post_comment",
+        idempotencyKey: "job:job-1:claim:conflict",
+        request: {
+          body: expect.stringContaining("CLAIM_CONFLICT"),
+        },
+      }),
+    ]);
     expect(gateway.events).toEqual(["comment"]);
     expect(store.mutationCalls).toContain("job:job-1:claim:conflict");
     expect(gateway.comments[0]).toContain(
