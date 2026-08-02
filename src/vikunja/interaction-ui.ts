@@ -106,6 +106,18 @@ const deliverComment = async (
     return commentId(numericId);
   });
 
+const manualOverrideError = (task: {
+  readonly projectId: number;
+  readonly bucketId: number;
+  readonly done: boolean;
+}): Error => {
+  const error = new Error(
+    `task state changed while waiting (observed project ${task.projectId}, bucket ${task.bucketId}, done=${task.done})`,
+  );
+  error.name = "ManualStateOverrideError";
+  return error;
+};
+
 const moveTask = async (
   options: VikunjaQuestionUiOptions,
   bucket: BucketId,
@@ -118,6 +130,20 @@ const moveTask = async (
     idempotencyKey,
     { bucketId: bucket, expectedBucketId: expectedBucket },
     async () => {
+      const current = await options.gateway.getTask(options.job.taskId);
+      const sameProject = current.projectId === options.job.projectId;
+      if (sameProject && !current.done && current.bucketId === bucket) {
+        return null;
+      }
+      if (!sameProject || current.done || current.bucketId !== expectedBucket) {
+        if (typeof options.store.failMutation === "function") {
+          await options.store.failMutation(
+            idempotencyKey,
+            `task state superseded move (project ${current.projectId}, bucket ${current.bucketId}, done=${current.done})`,
+          );
+        }
+        throw manualOverrideError(current);
+      }
       await options.gateway.moveTask(options.job.taskId, bucket);
       return null;
     },
@@ -139,18 +165,6 @@ const abortError = (reason: unknown): Error => {
   return error;
 };
 
-const manualOverrideError = (task: {
-  readonly projectId: number;
-  readonly bucketId: number;
-  readonly done: boolean;
-}): Error => {
-  const error = new Error(
-    `task state changed while waiting (observed project ${task.projectId}, bucket ${task.bucketId}, done=${task.done})`,
-  );
-  error.name = "ManualStateOverrideError";
-  return error;
-};
-
 /**
  * Control comments are consumed by the live command monitor, not by the
  * waiting question. In particular, `/pi abort` must not become an input answer
@@ -167,6 +181,29 @@ export const createVikunjaQuestionUi = (
   const maxCommentChars = options.maxCommentChars ?? 12000;
   const pollIntervalMs = options.pollIntervalMs ?? 15000;
   const sleep = options.sleep ?? defaultSleep;
+  const moveTaskUntilConfirmed = async (
+    bucket: BucketId,
+    expectedBucket: BucketId,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    for (;;) {
+      if (signal?.aborted) throw abortError(signal.reason);
+      try {
+        await moveTask(options, bucket, expectedBucket, idempotencyKey);
+        return;
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.name === "ManualStateOverrideError"
+        ) {
+          throw error;
+        }
+        if (signal?.aborted) throw abortError(signal.reason);
+        await sleep(pollIntervalMs, signal);
+      }
+    }
+  };
 
   const ask = async (
     kind: "input" | "confirm" | "select",
@@ -201,16 +238,17 @@ export const createVikunjaQuestionUi = (
       questionBody,
     );
     await options.store.recordQuestionComment(question.id, questionCommentId);
-    await moveTask(
-      options,
-      options.layout.buckets.Waiting.id,
-      options.layout.buckets.Running.id,
-      `job:${options.job.id}:question:${question.id}:waiting`,
-    );
-    await options.store.transition(options.job.id, { state: "waiting" });
 
-    let cursor = questionCommentId;
     try {
+      await moveTaskUntilConfirmed(
+        options.layout.buckets.Waiting.id,
+        options.layout.buckets.Running.id,
+        `job:${options.job.id}:question:${question.id}:waiting`,
+        signal,
+      );
+      await options.store.transition(options.job.id, { state: "waiting" });
+
+      let cursor = questionCommentId;
       for (;;) {
         if (signal?.aborted) throw abortError(signal.reason);
         const currentTask =
@@ -269,16 +307,16 @@ export const createVikunjaQuestionUi = (
             options.ownerUserId,
           );
           if (result.ok) {
+            await moveTaskUntilConfirmed(
+              options.layout.buckets.Running.id,
+              options.layout.buckets.Waiting.id,
+              `job:${options.job.id}:question:${question.id}:running`,
+              signal,
+            );
             await options.store.resolveQuestion(
               question.id,
               comment.id,
               result.answer,
-            );
-            await moveTask(
-              options,
-              options.layout.buckets.Running.id,
-              options.layout.buckets.Waiting.id,
-              `job:${options.job.id}:question:${question.id}:running`,
             );
             await options.store.transition(options.job.id, {
               state: "running",
@@ -300,6 +338,12 @@ export const createVikunjaQuestionUi = (
         await sleep(pollIntervalMs, signal);
       }
     } catch (error) {
+      if (error instanceof Error && error.name === "ManualStateOverrideError") {
+        await options.store.abortQuestion(
+          question.id,
+          "task moved while entering or leaving Waiting",
+        );
+      }
       if (error instanceof Error && error.name === "AbortError") {
         const reason = signal?.reason;
         const reasonText =

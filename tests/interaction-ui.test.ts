@@ -68,8 +68,10 @@ interface FakeState {
   readonly transitions: string[];
   readonly watermarks: number[];
   readonly mutationKeys: string[];
+  readonly failedMutationKeys: string[];
   currentJob: Job;
   activeQuestion: Question;
+  remoteBucket: ReturnType<typeof bucketId>;
 }
 
 const makeDependencies = (
@@ -83,8 +85,10 @@ const makeDependencies = (
     transitions: [],
     watermarks: [],
     mutationKeys: [],
+    failedMutationKeys: [],
     currentJob: job,
     activeQuestion: question(kind, options),
+    remoteBucket: layout.buckets.Running.id,
   };
   let poll = 0;
   const store = {
@@ -104,6 +108,10 @@ const makeDependencies = (
       } as never;
     },
     async completeMutation() {
+      return {} as never;
+    },
+    async failMutation(key: string) {
+      state.failedMutationKeys.push(key);
       return {} as never;
     },
     async createQuestion() {
@@ -161,6 +169,17 @@ const makeDependencies = (
     },
   } as unknown as JobStore;
   const gateway = {
+    async getTask() {
+      return {
+        id: job.taskId,
+        projectId: job.projectId,
+        title: "Task",
+        priority: 1,
+        position: 1,
+        bucketId: state.remoteBucket,
+        done: false,
+      };
+    },
     async postComment(_taskId: ReturnType<typeof taskId>, body: string) {
       state.comments.push(body);
       return commentId(100 + state.comments.length);
@@ -170,6 +189,7 @@ const makeDependencies = (
       bucket: ReturnType<typeof bucketId>,
     ) {
       state.moves.push(bucket);
+      state.remoteBucket = bucket;
     },
     async listComments() {
       const result = responses[Math.min(poll++, responses.length - 1)];
@@ -216,6 +236,88 @@ describe("createVikunjaQuestionUi", () => {
       "job:job-1:question:question-1:waiting",
       "job:job-1:question:question-1:running",
     ]);
+  });
+
+  it("does not move a question to Waiting after an owner bucket override", async () => {
+    const controller = new AbortController();
+    const dependencies = makeDependencies([[]]);
+    const ui = createVikunjaQuestionUi({} as never, {
+      ...dependencies,
+      gateway: {
+        ...dependencies.gateway,
+        async getTask() {
+          return {
+            id: job.taskId,
+            projectId: job.projectId,
+            title: "Task",
+            priority: 1,
+            position: 1,
+            bucketId: layout.buckets.Done.id,
+            done: true,
+          };
+        },
+      },
+      job,
+      layout,
+      ownerUserId: userId(1),
+      pollIntervalMs: 0,
+      sleep: async () => controller.abort("test safety stop"),
+    });
+
+    await expect(
+      ui.input("Need a decision", undefined, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "ManualStateOverrideError" });
+    expect(dependencies.state.moves).toEqual([]);
+    expect(dependencies.state.failedMutationKeys).toEqual([
+      "job:job-1:question:question-1:waiting",
+    ]);
+  });
+
+  it("keeps an accepted answer pending until Running is confirmed", async () => {
+    const reply: TaskComment = {
+      id: commentId(2),
+      taskId: job.taskId,
+      authorId: userId(1),
+      body: "ship it",
+      createdAt: "2026-01-01T00:00:01.000Z",
+    };
+    const dependencies = makeDependencies([[reply]]);
+    let runningAttempts = 0;
+    let stateDuringFailure: Question["state"] | null = null;
+    const gateway = {
+      ...dependencies.gateway,
+      async moveTask(
+        _taskId: ReturnType<typeof taskId>,
+        bucket: ReturnType<typeof bucketId>,
+      ) {
+        if (bucket === layout.buckets.Running.id) {
+          runningAttempts += 1;
+          if (runningAttempts === 1) {
+            stateDuringFailure = dependencies.state.activeQuestion.state;
+            throw new Error("temporary move failure");
+          }
+        }
+        dependencies.state.moves.push(bucket);
+        dependencies.state.remoteBucket = bucket;
+      },
+    };
+    const ui = createVikunjaQuestionUi({} as never, {
+      gateway,
+      store: dependencies.store,
+      job,
+      layout,
+      ownerUserId: userId(1),
+      pollIntervalMs: 0,
+      sleep: async () => undefined,
+    });
+
+    await expect(ui.input("Need a decision", undefined, {})).resolves.toBe(
+      "ship it",
+    );
+    expect(stateDuringFailure).toBe("pending");
+    expect(runningAttempts).toBe(2);
+    expect(dependencies.state.activeQuestion.state).toBe("resolved");
+    expect(dependencies.state.remoteBucket).toBe(layout.buckets.Running.id);
   });
 
   it("does not consume /pi control comments as question answers", async () => {
@@ -307,16 +409,19 @@ describe("createVikunjaQuestionUi", () => {
 
   it("fails safely when a waiting task is moved to another bucket", async () => {
     const deps = makeDependencies([[]]);
+    let reads = 0;
     const gateway = {
       ...deps.gateway,
       async getTask() {
+        reads += 1;
         return {
           id: job.taskId,
           projectId: job.projectId,
           title: "Task",
           priority: 1,
           position: 1,
-          bucketId: layout.buckets.Failed.id,
+          bucketId:
+            reads === 1 ? layout.buckets.Running.id : layout.buckets.Failed.id,
           done: false,
         };
       },
