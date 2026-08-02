@@ -410,6 +410,49 @@ describe("completeConductorJob", () => {
     ]);
   });
 
+  it("compensates a conductor failure from the durable Waiting bucket", async () => {
+    const dependencies = makeInput();
+    dependencies.setCurrent({ ...job, state: "waiting" });
+    dependencies.input.handle = {
+      async completion() {
+        return { finalCheckpoint: {}, exitReason: "aborted" as const };
+      },
+    } as unknown as ConductorHandle;
+    dependencies.input.gateway = {
+      async getTask() {
+        return {
+          id: job.taskId,
+          projectId: job.projectId,
+          title: "Task",
+          priority: 1,
+          position: 1,
+          bucketId: layout.buckets.Waiting.id,
+          done: false,
+        };
+      },
+      async moveTask(_taskId: unknown, bucket: unknown) {
+        dependencies.events.push(`move:${bucket}`);
+      },
+      async postComment() {
+        return 101;
+      },
+    } as CompleteConductorJobInput["gateway"];
+
+    await expect(
+      completeConductorJob(dependencies.input),
+    ).rejects.toBeInstanceOf(JobCompletionError);
+
+    expect(
+      dependencies.mutations.get(
+        "job:job-1:completion:move-failed:conductor_session_failed",
+      ),
+    ).toMatchObject({
+      state: "succeeded",
+      request: { bucketId: 6, expectedBucketId: 4 },
+    });
+    expect(dependencies.events).toContain("move:6");
+  });
+
   it("does not overwrite an owner terminal move while reporting conductor failure", async () => {
     const dependencies = makeInput();
     dependencies.input.handle = {

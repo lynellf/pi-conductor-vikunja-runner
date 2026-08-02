@@ -265,10 +265,15 @@ const failCompletedJob = async (
       cause,
     );
   }
+  const durableJob = (await input.store.getJob(input.job.id)) ?? input.job;
+  const expectedBucketId =
+    durableJob.state === "waiting"
+      ? input.layout.buckets.Waiting.id
+      : input.layout.buckets.Running.id;
   const moveKey = `job:${input.job.id}:completion:move-failed:${code.toLowerCase()}`;
   const moveRequest = {
     bucketId: input.layout.buckets.Failed.id,
-    expectedBucketId: input.layout.buckets.Running.id,
+    expectedBucketId,
   };
   const commentKey = `job:${input.job.id}:completion:${code.toLowerCase()}`;
   const commentRequest = { body: failureComment(input, code, detail) };
