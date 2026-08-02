@@ -106,6 +106,13 @@ const deliverComment = async (
     return commentId(numericId);
   });
 
+class RetryableQuestionMoveError extends Error {
+  public constructor(cause: unknown) {
+    super("question bucket move could not be confirmed", { cause });
+    this.name = "RetryableQuestionMoveError";
+  }
+}
+
 const manualOverrideError = (task: {
   readonly projectId: number;
   readonly bucketId: number;
@@ -130,7 +137,12 @@ const moveTask = async (
     idempotencyKey,
     { bucketId: bucket, expectedBucketId: expectedBucket },
     async () => {
-      const current = await options.gateway.getTask(options.job.taskId);
+      let current: Awaited<ReturnType<VikunjaGateway["getTask"]>>;
+      try {
+        current = await options.gateway.getTask(options.job.taskId);
+      } catch (error) {
+        throw new RetryableQuestionMoveError(error);
+      }
       const sameProject = current.projectId === options.job.projectId;
       if (sameProject && !current.done && current.bucketId === bucket) {
         return null;
@@ -144,7 +156,11 @@ const moveTask = async (
         }
         throw manualOverrideError(current);
       }
-      await options.gateway.moveTask(options.job.taskId, bucket);
+      try {
+        await options.gateway.moveTask(options.job.taskId, bucket);
+      } catch (error) {
+        throw new RetryableQuestionMoveError(error);
+      }
       return null;
     },
   );
@@ -193,10 +209,7 @@ export const createVikunjaQuestionUi = (
         await moveTask(options, bucket, expectedBucket, idempotencyKey);
         return;
       } catch (error) {
-        if (
-          error instanceof Error &&
-          error.name === "ManualStateOverrideError"
-        ) {
+        if (!(error instanceof RetryableQuestionMoveError)) {
           throw error;
         }
         if (signal?.aborted) throw abortError(signal.reason);
