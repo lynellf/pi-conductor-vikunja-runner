@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import type { PersistedRecord } from "pi-conductor";
 import type {
   AnalyticsReporter,
@@ -7,8 +10,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AnalyticsBridge,
   type AnalyticsRecordSubscriber,
+  type ProjectAnalyticsReporterOptions,
   startAnalyticsBridge,
 } from "../src/conductor/analytics.js";
+import { projectId } from "../src/domain/types.js";
 
 const stats = (): QueueStats => ({
   enqueued: 0,
@@ -74,6 +79,61 @@ const record = {
 } as const satisfies PersistedRecord;
 
 describe("AnalyticsBridge", () => {
+  it("routes each run through the configured project repository context", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-analytics-route-"));
+    const firstReporter = new FakeReporter();
+    const secondReporter = new FakeReporter();
+    const created: ProjectAnalyticsReporterOptions[] = [];
+    const subscriber = new FakeSubscriber();
+    const firstRunsDir = join(dataDir, "conductor-runs", "42");
+    await mkdir(firstRunsDir, { recursive: true });
+    await writeFile(join(firstRunsDir, "run-1.jsonl"), "");
+
+    const bridge = new AnalyticsBridge({
+      dataDir,
+      configPath: "/run/credentials/analytics.json",
+      projects: [
+        {
+          id: projectId(42),
+          repository: "https://github.com/lynellf/homepage.git",
+        },
+        {
+          id: projectId(43),
+          repository: "git@github.com:lynellf/run-ledger.git",
+        },
+      ],
+      reporterFactory: (options) => {
+        created.push(options);
+        return options.projectId === projectId(42)
+          ? firstReporter
+          : secondReporter;
+      },
+      subscriber,
+    });
+
+    await bridge.start();
+    subscriber.listener?.(record);
+    await bridge.shutdown();
+
+    expect(firstReporter.records).toEqual([record]);
+    expect(firstReporter.records[0]).toBe(record);
+    expect(secondReporter.records).toEqual([]);
+    expect(firstReporter.backfillCalls).toBe(1);
+    expect(secondReporter.backfillCalls).toBe(1);
+    expect(created).toEqual([
+      expect.objectContaining({
+        projectId: projectId(42),
+        runsDir: firstRunsDir,
+      }),
+      expect.objectContaining({
+        projectId: projectId(43),
+        runsDir: join(dataDir, "conductor-runs", "43"),
+      }),
+    ]);
+    expect(basename(created[0]?.cwd ?? "")).toBe("homepage");
+    expect(basename(created[1]?.cwd ?? "")).toBe("run-ledger");
+  });
+
   it("backfills then forwards live records unchanged and shuts down once", async () => {
     const reporter = new FakeReporter();
     const subscriber = new FakeSubscriber();

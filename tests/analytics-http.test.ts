@@ -8,6 +8,7 @@ import {
   AnalyticsBridge,
   type AnalyticsRecordSubscriber,
 } from "../src/conductor/analytics.js";
+import { projectId } from "../src/domain/types.js";
 
 const temporaryDirectories: string[] = [];
 const servers: Server[] = [];
@@ -71,7 +72,7 @@ class TestSubscriber implements AnalyticsRecordSubscriber {
 const records = [
   { type: "session_started", run_id: "run-1", ts: 1 },
   { type: "transition_accepted", run_id: "run-1", ts: 2 },
-  { type: "checkpoint_snapshot", run_id: "run-1", ts: 3 },
+  { type: "checkpoint_snapshot", checkpoint: { run_id: "run-1" } },
   {
     type: "file_mutation",
     run_id: "run-1",
@@ -84,12 +85,21 @@ const records = [
   },
 ] as const;
 
+const projects = [
+  {
+    id: projectId(42),
+    repository: "https://github.com/lynellf/homepage.git",
+  },
+] as const;
+
 describe("analytics HTTP compatibility", () => {
   it("delivers lifecycle, transition, checkpoint, and file mutation records unchanged", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const root = await temporaryDirectory();
     const runsDir = join(root, "conductor-runs");
-    await mkdir(runsDir, { recursive: true });
+    const projectRunsDir = join(runsDir, "42");
+    await mkdir(projectRunsDir, { recursive: true });
+    await writeFile(join(projectRunsDir, "run-1.jsonl"), "");
     const received: unknown[] = [];
     const endpoint = await listen(received);
     const configPath = join(root, "analytics.json");
@@ -106,6 +116,7 @@ describe("analytics HTTP compatibility", () => {
       dataDir: root,
       runsDir,
       configPath,
+      projects,
       subscriber,
     });
 
@@ -116,8 +127,13 @@ describe("analytics HTTP compatibility", () => {
     await bridge.shutdown();
 
     const delivered = received.flatMap((value) => {
-      const envelope = value as { source?: unknown; records?: unknown[] };
+      const envelope = value as {
+        cwd?: unknown;
+        source?: unknown;
+        records?: unknown[];
+      };
       expect(envelope.source).toBe("pi.events:conductor:record");
+      expect(envelope.cwd).toBe(join(root, "repositories", "42", "homepage"));
       return envelope.records ?? [];
     });
     expect(delivered).toEqual(records);
@@ -127,9 +143,10 @@ describe("analytics HTTP compatibility", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const root = await temporaryDirectory();
     const runsDir = join(root, "conductor-runs");
-    await mkdir(runsDir, { recursive: true });
+    const projectRunsDir = join(runsDir, "42");
+    await mkdir(projectRunsDir, { recursive: true });
     await writeFile(
-      join(runsDir, "run-outage.jsonl"),
+      join(projectRunsDir, "run-outage.jsonl"),
       `${JSON.stringify(records[3])}\n`,
     );
     const configPath = join(root, "analytics.json");
@@ -146,12 +163,13 @@ describe("analytics HTTP compatibility", () => {
       dataDir: root,
       runsDir,
       configPath,
+      projects,
       subscriber: new TestSubscriber(),
     });
     await failedBridge.start();
     await failedBridge.shutdown();
     await expect(
-      readFile(join(runsDir, "run-outage.watermark.json"), "utf8"),
+      readFile(join(projectRunsDir, "run-outage.watermark.json"), "utf8"),
     ).rejects.toThrow();
 
     const received: unknown[] = [];
@@ -168,6 +186,7 @@ describe("analytics HTTP compatibility", () => {
       dataDir: root,
       runsDir,
       configPath,
+      projects,
       subscriber: new TestSubscriber(),
     });
     await recoveredBridge.start();
@@ -178,7 +197,7 @@ describe("analytics HTTP compatibility", () => {
     );
     expect(delivered).toEqual([records[3]]);
     await expect(
-      readFile(join(runsDir, "run-outage.watermark.json"), "utf8"),
+      readFile(join(projectRunsDir, "run-outage.watermark.json"), "utf8"),
     ).resolves.toContain("lastSentIndex");
   });
 });
