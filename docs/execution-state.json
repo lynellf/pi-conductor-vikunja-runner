@@ -12,6 +12,23 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-056",
+      "objective": "Send analytics envelopes with the canonical pi-conductor plugin source accepted by Run Ledger so persisted run records can be ingested and backfilled.",
+      "source_refs": [
+        "Production observation: the runner loaded analytics configuration and started a conductor run, but Run Ledger showed no corresponding entry",
+        "Run Ledger src/lib/ingestion/schemas.ts: source must equal pi.events:conductor:record",
+        "docs/pi-conductor-vikunja-runner-spec.md §§1, 13, 20, 23"
+      ],
+      "approval_evidence": [
+        "S-056-A1 PASS: the analytics HTTP compatibility test failed with the prior vikunja-runner:conductor:record source and passes after the runner uses pi.events:conductor:record.",
+        "S-056-A2 PASS: Run Ledger's focused ingestion-schema suite passed 54 tests and independently confirms the canonical source is accepted by the deployed receiver contract.",
+        "S-056-A3 PASS: existing outage/backfill coverage proves unsuccessful deliveries leave the JSONL watermark unadvanced and are delivered after a compatible reporter restart.",
+        "Independent verification: pnpm test:coverage passed 235 tests across 32 files with 85.61% statements and 77.24% branches; pnpm build, pnpm typecheck, pnpm lint, pnpm audit --prod, pnpm install --frozen-lockfile, and git diff --check passed. No rendered UI changed; UI review was not required.",
+        "Whole-change review: correctness, readability, architecture, security, and performance review found no blocking issues; conductor records remain unchanged, no credential or endpoint behavior changed, and the receiver's existing strict source contract is now honored."
+      ],
+      "approved_at": "2026-08-03T13:08:00Z"
+    },
+    {
       "id": "S-055",
       "objective": "Set the service account HOME explicitly so systemd Git operations load the same credential and helper configuration as operator validation.",
       "source_refs": [
@@ -823,10 +840,11 @@
       "S-052: accepted Vikunja empty Kanban buckets that omit tasks while preserving strict validation for every present task collection.",
       "S-053: corrected the Vikunja 2.4 Kanban move to POST and added a claim-failure circuit breaker that logs the original error and prevents repeated Ready-task claims.",
       "S-054: made runner assignment idempotent through validated read-before-write and read-after-failure reconciliation, including startup replay.",
-      "S-055: set HOME explicitly in the packaged systemd service and aligned service-user validation so daemon Git operations load the configured gh credential helper."
+      "S-055: set HOME explicitly in the packaged systemd service and aligned service-user validation so daemon Git operations load the configured gh credential helper.",
+      "S-056: replaced the runner-specific analytics envelope source with the canonical pi.events:conductor:record value accepted by Run Ledger, preserving JSONL backfill for previously rejected batches."
     ],
     "current_protection_notes": "Preserved host-generated .pi-conductor artifacts and all prior approved implementation slices. S-049 changes the controlling specification under explicit operator approval to make the existing shared manifest the only operator-maintained source; no project manifest or runner-profile copy remains. No rendered UI changed."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-03T12:55:00Z"
+  "updated_at": "2026-08-03T13:08:00Z"
 }
