@@ -19,6 +19,7 @@ import {
   isObject,
   object,
   pageCount,
+  parseAssignedUserId,
   parseAssignee,
   parseBucket,
   parseComment,
@@ -277,11 +278,22 @@ export class VikunjaHttpGateway implements VikunjaGateway {
     if (!this.taskLocations.has(id)) {
       throw new VikunjaResponseError(`task ${id} has no known project view`);
     }
-    const response = await this.request(`/tasks/${id}/assignees`, {
-      method: "PUT",
-      body: { user_id: this.runnerId },
-    });
-    parseAssignee(response, `tasks.${id}.assignee`, this.runnerId);
+    if (await this.isRunnerAssigned(id)) return;
+    try {
+      const response = await this.request(`/tasks/${id}/assignees`, {
+        method: "PUT",
+        body: { user_id: this.runnerId },
+      });
+      parseAssignee(response, `tasks.${id}.assignee`, this.runnerId);
+    } catch (error) {
+      try {
+        if (await this.isRunnerAssigned(id)) return;
+      } catch {
+        // Preserve the original mutation failure when reconciliation is also
+        // unavailable; it is the actionable cause of this claim failure.
+      }
+      throw error;
+    }
   }
 
   public async listComments(
@@ -310,6 +322,17 @@ export class VikunjaHttpGateway implements VikunjaGateway {
   }
 
   private readonly runnerId: number;
+
+  private async isRunnerAssigned(id: TaskId): Promise<boolean> {
+    const assignees = await this.listPaged(
+      `/tasks/${id}/assignees`,
+      `tasks.${id}.assignees`,
+    );
+    const userIds = assignees.map((value, index) =>
+      parseAssignedUserId(value, `tasks.${id}.assignees[${index}]`),
+    );
+    return userIds.includes(this.runnerId);
+  }
 
   private async listPaged(
     path: string,

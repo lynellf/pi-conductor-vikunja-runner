@@ -12,6 +12,23 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-054",
+      "objective": "Make runner assignment idempotent across task retries and ambiguous Vikunja assignment responses.",
+      "source_refs": [
+        "Production retry failure: Vikunja request failed: PUT /tasks/1/assignees (400) after the runner remained assigned from the previous attempt",
+        "https://tasks.eznas.link/api/v1/docs.json: GET and PUT /tasks/{taskID}/assignees",
+        "docs/pi-conductor-vikunja-runner-spec.md §§6, 13, 14, 17, 20, 23"
+      ],
+      "approval_evidence": [
+        "S-054-A1 PASS: assignRunner reads the paginated assignee list and performs no PUT when the validated runner user ID is already present.",
+        "S-054-A2 PASS: after a failed assignment PUT, the adapter rereads assignees and accepts the mutation only when remote state proves the runner is assigned; otherwise it preserves the original HTTP failure.",
+        "S-054-A3 PASS: startup reconciliation completes a pending assignment intent without another PUT when the runner is already assigned, preserving retry and restart idempotency.",
+        "Independent verification: pnpm test:coverage passed 235 tests across 32 files with 85.61% statements and 77.24% branches; pnpm build, pnpm typecheck, pnpm lint, pnpm audit --prod, pnpm install --frozen-lockfile, and git diff --check passed. No rendered UI changed; UI review was not required.",
+        "Whole-change review: correctness, readability, architecture, security, and performance review found no blocking issues; every external assignee ID remains validated, GET pagination and retry policy are reused, and no dependency or privilege changed."
+      ],
+      "approved_at": "2026-08-03T12:36:00Z"
+    },
+    {
       "id": "S-053",
       "objective": "Use Vikunja 2.4's documented Kanban bucket-move method and stop safely after a terminal claim failure instead of repeatedly reclaiming a still-Ready task.",
       "source_refs": [
@@ -788,10 +805,11 @@
       "S-049: moved conductor_manifest from each project to one required absolute runner-level setting shared by all repositories; production start/resume pass the canonical source path directly while keeping each worktree as cwd.",
       "S-049: split shared conductor/model/prompt validation from per-repository clone validation, enabled read-only home access for the service account, and documented a no-copy ACL-based reinstall migration.",
       "S-052: accepted Vikunja empty Kanban buckets that omit tasks while preserving strict validation for every present task collection.",
-      "S-053: corrected the Vikunja 2.4 Kanban move to POST and added a claim-failure circuit breaker that logs the original error and prevents repeated Ready-task claims."
+      "S-053: corrected the Vikunja 2.4 Kanban move to POST and added a claim-failure circuit breaker that logs the original error and prevents repeated Ready-task claims.",
+      "S-054: made runner assignment idempotent through validated read-before-write and read-after-failure reconciliation, including startup replay."
     ],
     "current_protection_notes": "Preserved host-generated .pi-conductor artifacts and all prior approved implementation slices. S-049 changes the controlling specification under explicit operator approval to make the existing shared manifest the only operator-maintained source; no project manifest or runner-profile copy remains. No rendered UI changed."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-03T11:49:00Z"
+  "updated_at": "2026-08-03T12:36:00Z"
 }
