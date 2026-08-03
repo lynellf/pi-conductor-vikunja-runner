@@ -12,6 +12,22 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-050",
+      "objective": "Align the runner's embedded Pi packages on one pi-conductor-compatible release line that recognizes every OpenAI Codex and OpenRouter model used by the shared conductor manifest.",
+      "source_refs": [
+        "Operator diagnostics: interactive pi 0.83.0 recognized gpt-5.6-terra/luna while the runner's mixed 0.79.1/0.83.0 dependency set did not",
+        "docs/pi-conductor-vikunja-runner-spec.md §§3, 10, 18, 20, 23"
+      ],
+      "approval_evidence": [
+        "S-050-A1 PASS: @earendil-works/pi-ai, pi-coding-agent, and pi-tui are pinned to the coherent 0.80.5 API line required by pi-conductor 0.12.0; pi-conductor imports successfully and TypeScript accepts its AuthStorage/ModelRegistry integration.",
+        "S-050-A2 PASS: tests/model-catalog.test.ts constructs the runner's embedded ModelRegistry and resolves openai-codex:gpt-5.6-terra, openai-codex:gpt-5.6-luna, openrouter:openai/gpt-5.6-terra, and openrouter:openai/gpt-5.6-luna from the built-in catalog.",
+        "S-050-A3 PASS: the model regression uses an in-memory credential store and proves models-store.json is not required for these manifest entries; runtime credentials remain sourced from the configured runner agent directory.",
+        "Independent verification: pnpm test:coverage passed 230 tests across 32 files with 85.55% statements and 76.96% branches; pnpm typecheck, pnpm build, pnpm lint, pnpm audit --prod, pnpm install --frozen-lockfile, and git diff --check passed. No rendered UI changed; UI review was not required.",
+        "Whole-change review: dependency compatibility, correctness, readability, architecture, security, and performance review found no blocking issues; no new dependency or privilege was introduced."
+      ],
+      "approved_at": "2026-08-03T04:25:00Z"
+    },
+    {
       "id": "S-049",
       "objective": "Use one configurable runner-level pi-conductor manifest for every managed repository without copying manifests or role prompts into project checkouts or runner profiles.",
       "source_refs": [
