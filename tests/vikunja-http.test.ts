@@ -402,7 +402,9 @@ describe("VikunjaHttpGateway", () => {
           { status: 200 },
         );
       if (url.pathname.endsWith("/assignees"))
-        return new Response(JSON.stringify({ user_id: 2 }), { status: 201 });
+        return init?.method === "PUT"
+          ? new Response(JSON.stringify({ user_id: 2 }), { status: 201 })
+          : new Response(JSON.stringify([]), { status: 200 });
       if (url.pathname.endsWith("/comments"))
         return new Response(
           JSON.stringify({
@@ -438,6 +440,120 @@ describe("VikunjaHttpGateway", () => {
       url.endsWith("/tasks/10/assignees"),
     );
     expect(JSON.parse(String(assignment?.init.body))).toEqual({ user_id: 2 });
+  });
+
+  it("does not add the runner when it is already assigned", async () => {
+    let assignmentWrites = 0;
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname.endsWith("/projects/42/views"))
+        return new Response(JSON.stringify([view]), { status: 200 });
+      if (url.pathname.endsWith("/views/8/buckets"))
+        return new Response(JSON.stringify(buckets), { status: 200 });
+      if (url.pathname.endsWith("/views/8/tasks"))
+        return new Response(
+          JSON.stringify([{ ...buckets[1], tasks: [task(10, 2)] }]),
+          { status: 200 },
+        );
+      if (url.pathname.endsWith("/tasks/10/assignees")) {
+        if (init?.method === "PUT") {
+          assignmentWrites += 1;
+          return new Response("duplicate", { status: 400 });
+        }
+        return new Response(JSON.stringify([{ id: 2, username: "runner" }]), {
+          status: 200,
+        });
+      }
+      throw new Error(`unexpected request ${url}`);
+    };
+    const gateway = new VikunjaHttpGateway({
+      baseUrl: "https://vikunja.example/api/v1",
+      token: "token",
+      runnerUserId: 2,
+      requestTimeoutMs: 1000,
+      fetch: fetcher,
+    });
+
+    const layout = await gateway.validateProjectLayout(project());
+    await gateway.listReadyTasks(layout);
+
+    await expect(gateway.assignRunner(taskId(10))).resolves.toBeUndefined();
+    expect(assignmentWrites).toBe(0);
+  });
+
+  it("accepts a failed assignment response only when a reread proves success", async () => {
+    let assignmentReads = 0;
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname.endsWith("/projects/42/views"))
+        return new Response(JSON.stringify([view]), { status: 200 });
+      if (url.pathname.endsWith("/views/8/buckets"))
+        return new Response(JSON.stringify(buckets), { status: 200 });
+      if (url.pathname.endsWith("/views/8/tasks"))
+        return new Response(
+          JSON.stringify([{ ...buckets[1], tasks: [task(10, 2)] }]),
+          { status: 200 },
+        );
+      if (url.pathname.endsWith("/tasks/10/assignees")) {
+        if (init?.method === "PUT")
+          return new Response("response lost", { status: 400 });
+        assignmentReads += 1;
+        return new Response(
+          JSON.stringify(
+            assignmentReads === 1 ? [] : [{ id: 2, username: "runner" }],
+          ),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected request ${url}`);
+    };
+    const gateway = new VikunjaHttpGateway({
+      baseUrl: "https://vikunja.example/api/v1",
+      token: "token",
+      runnerUserId: 2,
+      requestTimeoutMs: 1000,
+      fetch: fetcher,
+    });
+
+    const layout = await gateway.validateProjectLayout(project());
+    await gateway.listReadyTasks(layout);
+
+    await expect(gateway.assignRunner(taskId(10))).resolves.toBeUndefined();
+    expect(assignmentReads).toBe(2);
+  });
+
+  it("preserves an assignment failure when the runner remains absent", async () => {
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      if (url.pathname.endsWith("/projects/42/views"))
+        return new Response(JSON.stringify([view]), { status: 200 });
+      if (url.pathname.endsWith("/views/8/buckets"))
+        return new Response(JSON.stringify(buckets), { status: 200 });
+      if (url.pathname.endsWith("/views/8/tasks"))
+        return new Response(
+          JSON.stringify([{ ...buckets[1], tasks: [task(10, 2)] }]),
+          { status: 200 },
+        );
+      if (url.pathname.endsWith("/tasks/10/assignees"))
+        return init?.method === "PUT"
+          ? new Response("invalid assignee", { status: 400 })
+          : new Response(JSON.stringify([]), { status: 200 });
+      throw new Error(`unexpected request ${url}`);
+    };
+    const gateway = new VikunjaHttpGateway({
+      baseUrl: "https://vikunja.example/api/v1",
+      token: "token",
+      runnerUserId: 2,
+      requestTimeoutMs: 1000,
+      fetch: fetcher,
+    });
+
+    const layout = await gateway.validateProjectLayout(project());
+    await gateway.listReadyTasks(layout);
+
+    await expect(gateway.assignRunner(taskId(10))).rejects.toMatchObject({
+      status: 400,
+    });
   });
 
   it("filters comments by the durable watermark", async () => {

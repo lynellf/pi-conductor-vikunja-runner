@@ -263,6 +263,11 @@ export const parseAssignee = (
   }
 };
 
+export const parseAssignedUserId = (value: unknown, path: string): number => {
+  const source = object(value, path);
+  return positiveInteger(required(source.id, `${path}.id`), `${path}.id`);
+};
+
 export const pageCount = (response: Response, path: string): number | null => {
   const header = response.headers.get("x-pagination-total-pages");
   if (header === null) return null;

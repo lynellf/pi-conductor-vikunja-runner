@@ -1223,7 +1223,8 @@ describe("reconcileStartup", () => {
     if (project === undefined) throw new Error("project config missing");
 
     const requests: string[] = [];
-    const fetcher: typeof fetch = async (input) => {
+    let assignmentWrites = 0;
+    const fetcher: typeof fetch = async (input, init) => {
       const url = new URL(input.toString());
       requests.push(url.pathname);
       if (url.pathname.endsWith("/projects/42/views")) {
@@ -1283,7 +1284,13 @@ describe("reconcileStartup", () => {
         );
       }
       if (url.pathname.endsWith("/assignees")) {
-        return new Response(JSON.stringify({ user_id: 2 }), { status: 200 });
+        if (init?.method === "PUT") {
+          assignmentWrites += 1;
+          return new Response(JSON.stringify({ user_id: 2 }), { status: 201 });
+        }
+        return new Response(JSON.stringify([{ id: 2, username: "runner" }]), {
+          status: 200,
+        });
       }
       throw new Error(`unexpected request ${url}`);
     };
@@ -1319,6 +1326,7 @@ describe("reconcileStartup", () => {
     expect((await store.getMutationIntent("job:assign:20"))?.state).toBe(
       "succeeded",
     );
+    expect(assignmentWrites).toBe(0);
   });
 
   it("finalizes a runner-owned Review transition after a restart", async () => {
