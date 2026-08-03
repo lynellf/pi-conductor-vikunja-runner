@@ -87,9 +87,11 @@ sudo install -o pi-conductor-runner -g pi-conductor-runner -m 0600 \
 The service unit grants write access only to the configured runner data directory
 and exposes operator home files read-only, still subject to normal Unix
 permissions and ACLs. It prevents privilege escalation, private-device access,
-and writes to the code or configuration trees. Git credentials must be available
-to the service user through the host's normal SSH credential setup; do not place
-private keys in this repository or in task content.
+and writes to the code or configuration trees. The unit explicitly sets `HOME`
+to the service account's data directory so Git can load its global configuration
+and credentials. Configure either the host's normal SSH credential setup or run
+`gh auth setup-git` as the service user for HTTPS repositories; do not place
+private keys or tokens in this repository or in task content.
 
 Install the unit:
 
@@ -104,7 +106,7 @@ Run validation as the service account before enabling the daemon so filesystem,
 manifest, model, Git, analytics, and Vikunja errors are reported together:
 
 ```sh
-sudo -u pi-conductor-runner /usr/bin/node \
+sudo -u pi-conductor-runner -H /usr/bin/node \
   /opt/pi-conductor-vikunja-runner/dist/src/cli/main.js validate \
   --config /etc/pi-conductor-vikunja-runner/config.yaml
 ```

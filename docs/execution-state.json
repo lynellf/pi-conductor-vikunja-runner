@@ -12,6 +12,22 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-055",
+      "objective": "Set the service account HOME explicitly so systemd Git operations load the same credential and helper configuration as operator validation.",
+      "source_refs": [
+        "Production repository preparation failure: service-user git ls-remote succeeded with sudo -H while the running systemd process environment omitted HOME",
+        "deploy/pi-conductor-vikunja-runner.service",
+        "docs/pi-conductor-vikunja-runner-spec.md §§8, 16, 20, 21, 23"
+      ],
+      "approval_evidence": [
+        "S-055-A1 PASS: the packaged systemd unit explicitly sets HOME to the service account's /var/lib/pi-conductor-vikunja-runner home, allowing Git and gh to locate the service-owned configuration used by successful interactive diagnostics.",
+        "S-055-A2 PASS: the packaging regression asserts the explicit HOME contract, and deployment validation now uses sudo -H so manual checks reproduce the daemon's credential environment.",
+        "Independent verification: pnpm test:coverage passed 235 tests across 32 files with 85.61% statements and 77.23% branches; pnpm build, pnpm typecheck, pnpm lint, pnpm audit --prod, pnpm install --frozen-lockfile, and git diff --check passed. No rendered UI changed; UI review was not required.",
+        "Whole-change review: correctness, readability, architecture, security, and performance review found no blocking issues; the service remains unprivileged, no secret or permission changed, and HOME targets the service account's existing writable data directory."
+      ],
+      "approved_at": "2026-08-03T12:55:00Z"
+    },
+    {
       "id": "S-054",
       "objective": "Make runner assignment idempotent across task retries and ambiguous Vikunja assignment responses.",
       "source_refs": [
@@ -806,10 +822,11 @@
       "S-049: split shared conductor/model/prompt validation from per-repository clone validation, enabled read-only home access for the service account, and documented a no-copy ACL-based reinstall migration.",
       "S-052: accepted Vikunja empty Kanban buckets that omit tasks while preserving strict validation for every present task collection.",
       "S-053: corrected the Vikunja 2.4 Kanban move to POST and added a claim-failure circuit breaker that logs the original error and prevents repeated Ready-task claims.",
-      "S-054: made runner assignment idempotent through validated read-before-write and read-after-failure reconciliation, including startup replay."
+      "S-054: made runner assignment idempotent through validated read-before-write and read-after-failure reconciliation, including startup replay.",
+      "S-055: set HOME explicitly in the packaged systemd service and aligned service-user validation so daemon Git operations load the configured gh credential helper."
     ],
     "current_protection_notes": "Preserved host-generated .pi-conductor artifacts and all prior approved implementation slices. S-049 changes the controlling specification under explicit operator approval to make the existing shared manifest the only operator-maintained source; no project manifest or runner-profile copy remains. No rendered UI changed."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-03T12:36:00Z"
+  "updated_at": "2026-08-03T12:55:00Z"
 }
