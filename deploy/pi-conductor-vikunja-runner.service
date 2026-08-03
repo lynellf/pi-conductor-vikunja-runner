@@ -8,6 +8,7 @@ After=network-online.target
 Type=simple
 User=pi-conductor-runner
 Group=pi-conductor-runner
+Environment=HOME=/var/lib/pi-conductor-vikunja-runner
 WorkingDirectory=/opt/pi-conductor-vikunja-runner
 ExecStart=/usr/bin/node /opt/pi-conductor-vikunja-runner/dist/src/cli/main.js run --config /etc/pi-conductor-vikunja-runner/config.yaml
 Restart=on-failure

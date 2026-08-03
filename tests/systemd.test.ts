@@ -15,6 +15,9 @@ describe("systemd service packaging", () => {
     expect(unit).toContain("User=pi-conductor-runner");
     expect(unit).toContain("Group=pi-conductor-runner");
     expect(unit).toContain(
+      "Environment=HOME=/var/lib/pi-conductor-vikunja-runner",
+    );
+    expect(unit).toContain(
       "ExecStart=/usr/bin/node /opt/pi-conductor-vikunja-runner/dist/src/cli/main.js run --config /etc/pi-conductor-vikunja-runner/config.yaml",
     );
     expect(unit).toContain("Restart=on-failure");
