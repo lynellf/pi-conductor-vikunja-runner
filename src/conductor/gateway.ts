@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
@@ -116,12 +117,13 @@ export class PiConductorGateway implements ConductorGateway {
     ui: RunnerUiContext,
   ): Promise<RunHandle> {
     const context = await this.contextFor(job);
+    const runsDir = this.runsDir(job);
     const options: StartRunOptions = {
       goal,
-      baseDir: this.runsDir(),
+      baseDir: runsDir,
       modelRegistry: this.modelRegistry,
       hostFactory: (factoryContext) =>
-        this.createHost(factoryContext, context.worktree, ui),
+        this.createHost(factoryContext, context.worktree, runsDir, ui),
     };
     return this.api.startRun(context.manifestPath, options);
   }
@@ -131,13 +133,14 @@ export class PiConductorGateway implements ConductorGateway {
       throw new ConductorIntegrationError("job has no conductor run ID");
     }
     const context = await this.contextFor(job);
+    const runsDir = this.runsDir(job, job.conductorRunId);
     const options: ResumeRunOptions = {
       // resumeRun restores the original goal from the durable conductor log.
       goal: "",
-      baseDir: this.runsDir(),
+      baseDir: runsDir,
       modelRegistry: this.modelRegistry,
       hostFactory: (factoryContext) =>
-        this.createHost(factoryContext, context.worktree, ui),
+        this.createHost(factoryContext, context.worktree, runsDir, ui),
     };
     return this.api.resumeRun(
       context.manifestPath,
@@ -179,13 +182,20 @@ export class PiConductorGateway implements ConductorGateway {
     return { worktree: realWorktree, manifestPath };
   }
 
-  private runsDir(): string {
-    return join(this.dataDir, "conductor-runs");
+  private runsDir(job: Job, runId?: string): string {
+    const root = join(this.dataDir, "conductor-runs");
+    // Runs created before project-scoped telemetry stored their JSONL files at
+    // the root. Preserve crash recovery for an in-flight legacy deployment.
+    if (runId !== undefined && existsSync(join(root, `${runId}.jsonl`))) {
+      return root;
+    }
+    return join(root, String(job.projectId));
   }
 
   private createHost(
     context: HostFactoryContext,
     worktree: string,
+    runsDir: string,
     ui: RunnerUiContext,
   ): Host {
     if (this.hostFactory !== undefined) {
@@ -202,7 +212,7 @@ export class PiConductorGateway implements ConductorGateway {
         loadedManifest: context.loadedManifest,
         runId: context.runId,
         agentDir: this.agentDir,
-        sessionDir: join(this.runsDir(), context.runId, "sessions"),
+        sessionDir: join(runsDir, context.runId, "sessions"),
       },
     });
   }

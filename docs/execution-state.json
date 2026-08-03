@@ -12,6 +12,23 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-057",
+      "objective": "Attribute each analytics run to its configured project repository instead of the pi-conductor-vikunja-runner daemon checkout.",
+      "source_refs": [
+        "Production observation: Run Ledger ingested runner telemetry but derived pi-conductor-vikunja-runner for every repository because all envelopes used the daemon data directory as cwd",
+        "Run Ledger src/lib/analytics/helpers/repo-label.ts derives repository labels from analytics envelope cwd basenames",
+        "docs/pi-conductor-vikunja-runner-spec.md §§8, 10, 13, 20, 23"
+      ],
+      "approval_evidence": [
+        "S-057-A1 PASS: the regression tests failed while conductor logs and analytics used one daemon-wide directory, then passed after new and resumed runs were partitioned under conductor-runs/<project_id>.",
+        "S-057-A2 PASS: the analytics HTTP compatibility test receives an envelope whose cwd basename is homepage for the trusted homepage repository configuration while lifecycle, transition, checkpoint, and file_mutation records remain unchanged and use the canonical source.",
+        "S-057-A3 PASS: project reporters backfill and watermark only their project log directory, live records route by persisted run ID, and a compatibility regression preserves resume from the pre-partition central log directory.",
+        "Independent verification: pnpm test:coverage passed 237 tests across 32 files with 85.55% statements and 77.34% branches; pnpm typecheck, pnpm build, pnpm lint, pnpm install --frozen-lockfile, and git diff --check passed. pnpm audit --prod reported one high-severity brace-expansion advisory in the existing unchanged pi-coding-agent dependency chain; this focused telemetry change modifies no dependencies. No rendered UI changed; UI review was not required.",
+        "Whole-change review: correctness, readability, architecture, security, and performance review found no blocking issues; repository identity comes only from trusted project configuration, records remain unchanged, Run Ledger requires no schema change, and reporter lookup is cached after one bounded project-directory scan per run."
+      ],
+      "approved_at": "2026-08-03T19:28:00Z"
+    },
+    {
       "id": "S-056",
       "objective": "Send analytics envelopes with the canonical pi-conductor plugin source accepted by Run Ledger so persisted run records can be ingested and backfilled.",
       "source_refs": [

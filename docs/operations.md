@@ -102,7 +102,7 @@ On restart:
 Do not delete `<data_dir>` while investigating. It contains:
 
 - `state.sqlite`
-- `conductor-runs/`
+- `conductor-runs/<project_id>/` with per-project analytics watermarks
 - persistent repository clones
 - task branches and worktrees
 - job metadata and analytics watermarks

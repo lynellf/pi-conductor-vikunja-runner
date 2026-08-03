@@ -126,7 +126,7 @@ describe("PiConductorGateway", () => {
       hostFactory: (context: unknown) => unknown;
     };
     expect(options.goal).toBe("Ship the fix");
-    expect(options.baseDir).toBe(join(dataDir, "conductor-runs"));
+    expect(options.baseDir).toBe(join(dataDir, "conductor-runs", "42"));
     expect(options.modelRegistry).toBeDefined();
     expect(options.hostFactory).toBeTypeOf("function");
   });
@@ -150,10 +150,40 @@ describe("PiConductorGateway", () => {
 
     await gateway.resume(job(worktree, "run-123"), undefined);
     expect(calls[0]?.manifest).toBe(`${await realpath(manifestPath)}#run-123`);
+    expect(
+      (calls[0]?.options as { baseDir: string } | undefined)?.baseDir,
+    ).toBe(join(dataDir, "conductor-runs", "42"));
 
     await expect(gateway.resume(job(worktree), undefined)).rejects.toThrow(
       "job has no conductor run ID",
     );
+  });
+
+  it("resumes a pre-partition run from the legacy central log directory", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
+    const worktree = join(dataDir, "jobs", "12", "worktree");
+    const manifestPath = join(dataDir, "conductor.yaml");
+    const legacyRunsDir = join(dataDir, "conductor-runs");
+    await mkdir(worktree, { recursive: true });
+    await mkdir(legacyRunsDir, { recursive: true });
+    await writeFile(manifestPath, "version: 2\nroles: []\n");
+    await writeFile(join(legacyRunsDir, "run-123.jsonl"), "{}\n");
+    const calls: Array<{ manifest: string; options: unknown }> = [];
+    const gateway = new PiConductorGateway(
+      {
+        dataDir,
+        agentDir: join(dataDir, "agent"),
+        conductorManifest: manifestPath,
+        modelRegistry: {} as ModelRegistry,
+      },
+      fakeApi(calls),
+    );
+
+    await gateway.resume(job(worktree, "run-123"), undefined);
+
+    expect(
+      (calls[0]?.options as { baseDir: string } | undefined)?.baseDir,
+    ).toBe(legacyRunsDir);
   });
 
   it("accepts a canonical persisted worktree when dataDir is a symlink", async () => {

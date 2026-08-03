@@ -213,7 +213,7 @@ The runner maintains one persistent clone per configured project and one worktre
 ```text
 <data_dir>/
   state.sqlite
-  conductor-runs/
+  conductor-runs/<project_id>/
   repositories/<project_id>/repo/
   jobs/<task_id>/projects/<project_id>/worktree/
   jobs/<task_id>/metadata.json
@@ -264,9 +264,9 @@ For each job, create a production host with:
 - The runner's shared `ModelRegistry`.
 - A Vikunja-backed `ExtensionUIContext`.
 - The configured isolated `agentDir`.
-- `sessionDir` set to `<data_dir>/conductor-runs/<run_id>/sessions` so role transcripts never appear in the repository worktree.
+- `sessionDir` set to `<data_dir>/conductor-runs/<project_id>/<run_id>/sessions` so role transcripts never appear in the repository worktree.
 
-Start a first attempt with `startRun()` and pass `<data_dir>/conductor-runs` as `baseDir`. Persist `handle.runId` before awaiting `handle.completion()`.
+Start a first attempt with `startRun()` and pass `<data_dir>/conductor-runs/<project_id>` as `baseDir`. Persist `handle.runId` before awaiting `handle.completion()`.
 
 Use `resumeRun()` only for a recorded nonterminal run after a process crash. Let pi-conductor perform its documented crashed-session reconciliation. A task with a terminal conductor run gets a new conductor run ID on its next attempt.
 
@@ -353,29 +353,39 @@ The review comment includes:
 
 ## 13. Telemetry contract
 
-Create one analytics reporter for the daemon's central conductor log directory:
+Create one analytics reporter per configured project. Project-scoped conductor
+log directories keep live routing and delivery-aware backfill deterministic,
+while the trusted configured repository supplies the logical CWD used by Run
+Ledger for repository attribution:
 
 ```ts
-const reporter = createAnalyticsReporter({
-  cwd: dataDir,
-  runsDir: join(dataDir, "conductor-runs"),
-  configPath: analyticsConfigPath,
-  source: "pi.events:conductor:record",
-});
+for (const project of projects) {
+  const reporter = createAnalyticsReporter({
+    cwd: repositoryContextPath(dataDir, project),
+    runsDir: join(dataDir, "conductor-runs", String(project.id)),
+    configPath: analyticsConfigPath,
+    source: "pi.events:conductor:record",
+  });
+  await reporter.backfill();
+}
 
-await reporter.backfill();
-const unsubscribe = subscribeToRecords((record) => reporter.enqueue(record));
+const unsubscribe = subscribeToRecords((record) =>
+  reporterForPersistedRun(record).enqueue(record),
+);
 ```
 
 Requirements:
 
+- Derive repository context only from the configured project repository, never from task content or comments.
+- Ensure the repository-context CWD basename is the configured repository name so Run Ledger attributes the run correctly without changing its ingestion schema.
+- Route a live record by its persisted run ID and project-scoped JSONL location; never broadcast one record to multiple project reporters.
 - Enqueue each `PersistedRecord` unchanged. Do not rename fields, wrap individual records, or synthesize conductor records.
 - Keep analytics best-effort and non-blocking. Analytics failure must not fail or pause coding work.
 - Log reporter statistics and queue-overflow diagnostics without logging authorization headers.
-- Use the reporter's JSONL backfill and watermark behavior on every daemon startup.
+- Use each project reporter's JSONL backfill and watermark behavior on every daemon startup.
 - On graceful shutdown: stop accepting new jobs, abort or drain the active run according to the shutdown timeout, unsubscribe, and call `reporter.shutdown()`.
 - At-least-once delivery means duplicates are allowed. Downstream analytics consumers remain responsible for deduplication.
-- A compatibility test must prove that lifecycle, transition, checkpoint, and `file_mutation` records reach a mock analytics endpoint.
+- A compatibility test must prove that lifecycle, transition, checkpoint, and `file_mutation` records reach a mock analytics endpoint unchanged with the configured repository context.
 
 ## 14. Persistence and idempotency
 

@@ -108,6 +108,7 @@ const defaultDependencies: OnceDependencies = {
       dataDir: config.runner.dataDir,
       runsDir: join(config.runner.dataDir, "conductor-runs"),
       configPath: config.runner.analyticsConfigPath,
+      projects: Object.values(config.projects),
       logger: runnerLogger,
     }),
   recoverStartup: recoverRuntime,
