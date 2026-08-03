@@ -17,6 +17,7 @@ const validConfig = () => ({
     data_dir: "/var/lib/pi-conductor-vikunja-runner",
     global_concurrency: 1,
     agent_dir: "/var/lib/pi-conductor-vikunja-runner/pi-agent",
+    conductor_manifest: "/operator/.pi/conductor.yaml",
     analytics_config_path: "/run/credentials/conductor-analytics.json",
     max_comment_chars: 12000,
   },
@@ -26,7 +27,6 @@ const validConfig = () => ({
       kanban_view_id: 8,
       repository: "git@github.com:lynellf/pi-conductor.git",
       default_branch: "main",
-      conductor_manifest: ".pi/conductor.yaml",
       publish: { mode: "push_branch", remote: "origin" },
       verify_commands: [
         ["pnpm", "typecheck"],
@@ -40,6 +40,9 @@ describe("parseConfig", () => {
   it("parses a valid private HTTP configuration with numeric project IDs", () => {
     const config = parseConfig(validConfig());
     expect(config.vikunja.baseUrl).toBe("http://100.80.73.65:30111");
+    expect(config.runner.conductorManifest).toBe(
+      "/operator/.pi/conductor.yaml",
+    );
     expect(config.projects["42"]?.id).toBe(42);
     expect(config.projects["42"]?.verifyCommands[0]).toEqual([
       "pnpm",
@@ -85,6 +88,24 @@ describe("parseConfig", () => {
     input.runner.global_concurrency = 2;
     expect(() => parseConfig(input)).toThrow(
       "runner.global_concurrency must equal 1 in version 1",
+    );
+  });
+
+  it("requires one absolute shared manifest and rejects project overrides", () => {
+    const relative = validConfig();
+    relative.runner.conductor_manifest = ".pi/conductor.yaml";
+    expect(() => parseConfig(relative)).toThrow(
+      "runner.conductor_manifest must be an absolute path",
+    );
+
+    const overridden = validConfig() as ReturnType<typeof validConfig> & {
+      projects: Record<string, Record<string, unknown>>;
+    };
+    const project = overridden.projects["42"];
+    if (project === undefined) throw new Error("project fixture missing");
+    project.conductor_manifest = ".pi/conductor.yaml";
+    expect(() => parseConfig(overridden)).toThrow(
+      "projects.42.conductor_manifest is not recognized",
     );
   });
 

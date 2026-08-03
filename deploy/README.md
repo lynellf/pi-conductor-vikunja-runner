@@ -17,14 +17,58 @@ sudo install -d -o pi-conductor-runner -g pi-conductor-runner -m 0750 \
 sudo install -d -o root -g pi-conductor-runner -m 0750 \
   /etc/pi-conductor-vikunja-runner/credentials
 
+sudo chown -R <admin-user>:pi-conductor-runner \
+  /opt/pi-conductor-vikunja-runner
+sudo chmod -R g+rX /opt/pi-conductor-vikunja-runner
+
 cd /opt/pi-conductor-vikunja-runner
-sudo -u pi-conductor-runner pnpm install --frozen-lockfile
-sudo -u pi-conductor-runner pnpm build
+pnpm install --frozen-lockfile
+pnpm build
 sudo install -o root -g pi-conductor-runner -m 0640 config.example.yaml \
   /etc/pi-conductor-vikunja-runner/config.yaml
 ```
 
-Edit the installed YAML to set the managed project values. For a protected-file
+Replace `<admin-user>` with the account that owns and updates the checkout. Build
+as that account, without `sudo`; the service account needs read/execute access to
+the built tree but does not need to modify it.
+
+Edit the installed YAML to set the managed project values and set the one global
+manifest path. It is a runner-level value, not a project-level value:
+
+```yaml
+runner:
+  conductor_manifest: "/absolute/path/to/.pi/conductor.yaml"
+```
+
+Every project uses that file. The runner does not copy it into `/etc`, its data
+directory, or a repository. Relative role and subagent `system_prompt` paths in
+this shared layout require a version 2 pi-conductor manifest and resolve from the
+manifest's directory. A version 1 manifest can be shared only when all prompt
+paths are absolute.
+
+The unit exposes home directories read-only. If the configured manifest is under
+an operator home, grant the service account traverse access to its parent
+directories and read access only to the manifest and referenced prompt files.
+For example, for a manifest under `/home/<operator>/.pi` with prompts under its
+`roles` directory:
+
+```sh
+sudo setfacl -m u:pi-conductor-runner:--x /home/<operator>
+sudo setfacl -m u:pi-conductor-runner:--x /home/<operator>/.pi
+sudo setfacl -m u:pi-conductor-runner:r-- \
+  /home/<operator>/.pi/conductor.yaml
+sudo setfacl -R -m u:pi-conductor-runner:rX \
+  /home/<operator>/.pi/roles
+sudo -u pi-conductor-runner test -r \
+  /home/<operator>/.pi/conductor.yaml
+```
+
+Repeat the last ACL rule for any other prompt subtree referenced by the manifest.
+Do not grant the service account read access to provider credentials or unrelated
+files in the operator's home. If `setfacl` is unavailable, install the host's
+`acl` package or use an equivalently narrow group-permission setup.
+
+For a protected-file
 credential setup, set `vikunja.token_file` to
 `/etc/pi-conductor-vikunja-runner/credentials/vikunja_api_token` and
 `runner.analytics_config_path` to
@@ -40,21 +84,41 @@ sudo install -o pi-conductor-runner -g pi-conductor-runner -m 0600 \
   /etc/pi-conductor-vikunja-runner/credentials/conductor-analytics.json
 ```
 
-The service unit grants write access only to the configured runner data directory.
-It prevents privilege escalation, private-device access, and writes to the code
-or configuration trees. Git credentials must be available to the service user
-through the host's normal SSH credential setup; do not place private keys in this
-repository or in task content.
+The service unit grants write access only to the configured runner data directory
+and exposes operator home files read-only, still subject to normal Unix
+permissions and ACLs. It prevents privilege escalation, private-device access,
+and writes to the code or configuration trees. Git credentials must be available
+to the service user through the host's normal SSH credential setup; do not place
+private keys in this repository or in task content.
 
-Install and start the unit:
+Install the unit:
 
 ```sh
 sudo install -o root -g root -m 0644 \
   deploy/pi-conductor-vikunja-runner.service \
   /etc/systemd/system/pi-conductor-vikunja-runner.service
 sudo systemctl daemon-reload
+```
+
+Run validation as the service account before enabling the daemon so filesystem,
+manifest, model, Git, analytics, and Vikunja errors are reported together:
+
+```sh
+sudo -u pi-conductor-runner /usr/bin/node \
+  /opt/pi-conductor-vikunja-runner/dist/src/cli/main.js validate \
+  --config /etc/pi-conductor-vikunja-runner/config.yaml
+```
+
+Then start the single service replica:
+
+```sh
 sudo systemctl enable --now pi-conductor-vikunja-runner.service
 ```
+
+When migrating an existing configuration, add the single
+`runner.conductor_manifest` value and remove every project-level
+`conductor_manifest`. Validation rejects the old project-level field instead of
+silently ignoring it.
 
 ## Operations
 

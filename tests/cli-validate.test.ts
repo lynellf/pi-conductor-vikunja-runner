@@ -6,7 +6,7 @@ import {
   validateRunner,
 } from "../src/cli/validate.js";
 import { parseConfig, type RunnerConfig } from "../src/config/config.js";
-import type { ProjectLayout } from "../src/domain/types.js";
+import { type ProjectLayout, projectId } from "../src/domain/types.js";
 
 const config = (): RunnerConfig =>
   parseConfig({
@@ -25,6 +25,7 @@ const config = (): RunnerConfig =>
       data_dir: "/var/lib/runner",
       global_concurrency: 1,
       agent_dir: "/var/lib/runner/pi-agent",
+      conductor_manifest: "/operator/.pi/conductor.yaml",
       analytics_config_path: "/run/analytics.json",
       max_comment_chars: 12000,
     },
@@ -34,7 +35,6 @@ const config = (): RunnerConfig =>
         kanban_view_id: 8,
         repository: "git@example/repo",
         default_branch: "main",
-        conductor_manifest: ".pi/conductor.yaml",
         publish: { mode: "local", remote: "origin" },
         verify_commands: [["pnpm", "test"]],
       },
@@ -66,10 +66,25 @@ describe("runner CLI validation", () => {
     );
   });
 
-  it("checks credentials, analytics, repository manifests, models, and project layouts read-only", async () => {
+  it("checks credentials, the shared conductor once, repositories, and project layouts read-only", async () => {
     const checked: string[] = [];
+    const inputConfig = config();
+    const firstProject = inputConfig.projects["42"];
+    if (firstProject === undefined) throw new Error("project config missing");
+    const multiProjectConfig: RunnerConfig = {
+      ...inputConfig,
+      projects: {
+        "42": firstProject,
+        "43": {
+          ...firstProject,
+          id: projectId(43),
+          displayIdentifier: "SECOND",
+          repository: "git@example/second-repo",
+        },
+      },
+    };
     const result = await validateRunner({
-      config: config(),
+      config: multiProjectConfig,
       gateway: {
         validateProjectLayout: async (project) => {
           checked.push(String(project.id));
@@ -79,11 +94,19 @@ describe("runner CLI validation", () => {
       statFile: async () => ({ mode: 0o600 }),
       readTextFile: async () => "secret-value",
       validateAnalytics: async () => checked.push("analytics"),
+      validateConductor: async () => checked.push("conductor"),
       validateProjectRuntime: async (project) =>
         checked.push(`runtime:${project.id}`),
     });
-    expect(checked).toEqual(["analytics", "runtime:42", "42"]);
-    expect(result.projectIds).toEqual([42]);
+    expect(checked).toEqual([
+      "analytics",
+      "conductor",
+      "runtime:42",
+      "42",
+      "runtime:43",
+      "43",
+    ]);
+    expect(result.projectIds).toEqual([42, 43]);
     expect(result.checkedCredentials).toEqual([
       "/run/vikunja-token",
       "/run/analytics.json",
@@ -109,24 +132,12 @@ describe("runner CLI validation", () => {
     ).rejects.not.toThrow("super-secret");
   });
 
-  it("rejects repository and manifest values that could escape trusted boundaries", () => {
+  it("rejects unsafe trusted repository and Git values", () => {
     const project = config().projects["42"];
     if (project === undefined) throw new Error("project config missing");
     expect(() =>
       validateProjectConfiguration({ ...project, repository: "-unsafe" }),
     ).toThrow("repository cannot start");
-    expect(() =>
-      validateProjectConfiguration({
-        ...project,
-        conductorManifest: "../outside/conductor.yaml",
-      }),
-    ).toThrow("must remain inside the worktree");
-    expect(() =>
-      validateProjectConfiguration({
-        ...project,
-        conductorManifest: "/absolute/conductor.yaml",
-      }),
-    ).toThrow("must remain inside the worktree");
     expect(() =>
       validateProjectConfiguration({ ...project, defaultBranch: "main..tmp" }),
     ).toThrow("safe Git branch name");
@@ -153,6 +164,7 @@ describe("runner CLI validation", () => {
         statFile: async () => ({ mode: 0o600 }),
         readTextFile: async () => "secret-value",
         validateAnalytics: async () => undefined,
+        validateConductor: async () => undefined,
         validateProjectRuntime: async () => undefined,
       }),
     ).rejects.toThrow("workflow buckets are invalid");

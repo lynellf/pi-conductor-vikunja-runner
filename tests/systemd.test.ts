@@ -21,6 +21,7 @@ describe("systemd service packaging", () => {
     expect(unit).toContain("KillSignal=SIGTERM");
     expect(unit).toContain("NoNewPrivileges=true");
     expect(unit).toContain("ProtectSystem=strict");
+    expect(unit).toContain("ProtectHome=read-only");
     expect(unit).toContain(
       "ReadWritePaths=/var/lib/pi-conductor-vikunja-runner",
     );

@@ -95,7 +95,6 @@ ${boundedContent}
 - Repository: ${repositoryName(input.project.repository)}
 - Task branch: ${input.branch}
 - Default branch: ${input.project.defaultBranch}
-- Conductor manifest: ${input.project.conductorManifest}
 
 ## Working rules
 

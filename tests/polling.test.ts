@@ -20,7 +20,6 @@ const project: ProjectConfig = {
   kanbanViewId: viewId(8),
   repository: "git@example.test:owner/repo.git",
   defaultBranch: "main",
-  conductorManifest: ".pi/conductor.yaml",
   publish: { mode: "local", remote: "origin" },
   verifyCommands: [["pnpm", "test"]],
 };

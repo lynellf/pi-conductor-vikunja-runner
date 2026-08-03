@@ -12,6 +12,23 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-049",
+      "objective": "Use one configurable runner-level pi-conductor manifest for every managed repository without copying manifests or role prompts into project checkouts or runner profiles.",
+      "source_refs": [
+        "Operator directive: one existing manifest path must serve all repositories and must not be hard-coded",
+        "docs/pi-conductor-vikunja-runner-spec.md §§7, 10, 16, 19, 22, 23"
+      ],
+      "approval_evidence": [
+        "S-049-A1 PASS: strict configuration requires one absolute runner.conductor_manifest, rejects project-level conductor_manifest overrides, and carries no application default path.",
+        "S-049-A2 PASS: PiConductorGateway uses the canonical shared manifest for start and resume while retaining the confined task worktree as the production host cwd; the real StubHost integration loads a version 2 manifest and relative prompt outside the repository.",
+        "S-049-A3 PASS: runner validation loads the shared manifest/model registry/prompt paths once, validates every repository independently, accepts absolute prompts in version 1, and requires version 2 for manifest-directory-relative prompts.",
+        "S-049-A4 PASS: the systemd unit exposes operator homes read-only, and deployment guidance grants the dedicated service account narrowly scoped ACL access without copying source configuration.",
+        "Independent verification: focused configuration, gateway, validation, and systemd tests passed; pnpm test:coverage passed 229 tests across 31 files with 85.55% statements and 76.94% branches; pnpm typecheck, pnpm build, pnpm lint, pnpm audit --prod, and git diff --check passed. No rendered UI changed; UI review was not required.",
+        "Whole-change review: correctness, readability, architecture, security, and performance review found no blocking issues after adding version-1 absolute-prompt, missing-prompt, and two-project/single-manifest regressions."
+      ],
+      "approved_at": "2026-08-03T02:57:30Z"
+    },
+    {
       "id": "S-048",
       "objective": "Resolve PR #1 findings: reconcile ambiguous Ready-to-Running claim moves, suppress stale durable moves for failed jobs, avoid retry worktree reuse across project changes, and refresh heartbeat while resumed jobs execute.",
       "source_refs": [
@@ -701,10 +718,12 @@
       "S-048: persist configured repository identity and carry retry branch/worktree artifacts only when both project and repository identities match.",
       "S-048: share the independent heartbeat refresher with resumed conductor jobs and add claim, retry, and resume-heartbeat regressions.",
       "S-048 remediation: failed claim move intents are terminally superseded before failed-job finalization; guarded expected-Running recovery intents prevent stale replay from resurrecting Ready or human-selected tasks, with observed-Ready and unreadable-re-read regressions.",
-      "S-048 remediation follow-up: startup reconciliation now terminally suppresses pending non-Failed moves belonging to failed jobs before any remote replay; guarded Failed moves remain eligible, and regressions prove Ready is not resurrected or a failed task advanced to Review."
+      "S-048 remediation follow-up: startup reconciliation now terminally suppresses pending non-Failed moves belonging to failed jobs before any remote replay; guarded Failed moves remain eligible, and regressions prove Ready is not resurrected or a failed task advanced to Review.",
+      "S-049: moved conductor_manifest from each project to one required absolute runner-level setting shared by all repositories; production start/resume pass the canonical source path directly while keeping each worktree as cwd.",
+      "S-049: split shared conductor/model/prompt validation from per-repository clone validation, enabled read-only home access for the service account, and documented a no-copy ACL-based reinstall migration."
     ],
-    "current_protection_notes": "Preserved the controlling specification, host-generated .pi-conductor artifacts, and all prior approved implementation slices including S-047. S-048 remediation is limited to the reviewer finding on stale durable mutation replay; the repository/retry and resumed-heartbeat fixes remain in the same slice. No rendered UI changed."
+    "current_protection_notes": "Preserved host-generated .pi-conductor artifacts and all prior approved implementation slices. S-049 changes the controlling specification under explicit operator approval to make the existing shared manifest the only operator-maintained source; no project manifest or runner-profile copy remains. No rendered UI changed."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-02T14:19:00Z"
+  "updated_at": "2026-08-03T02:57:30Z"
 }

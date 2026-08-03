@@ -51,9 +51,10 @@ pnpm runner:validate -- --config /etc/pi-conductor-vikunja-runner/config.yaml
 ```
 
 Validation is read-only with respect to Vikunja and configured Git remotes. It
-checks protected credential permissions, analytics configuration, a temporary
-shallow clone of each default branch, conductor manifests and prompt paths,
-registered model providers, and Vikunja workflow layouts.
+checks protected credential permissions, analytics configuration, the one
+shared conductor manifest and its prompt paths, registered model providers, a
+temporary shallow clone of each default branch, and Vikunja workflow layouts.
+The shared manifest is loaded once regardless of project count.
 
 ## Starting and observing
 

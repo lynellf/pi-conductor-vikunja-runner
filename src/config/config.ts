@@ -19,7 +19,6 @@ export interface ProjectConfig {
   readonly kanbanViewId: ViewId;
   readonly repository: string;
   readonly defaultBranch: string;
-  readonly conductorManifest: string;
   readonly publish: PublishConfig;
   readonly verifyCommands: readonly (readonly string[])[];
 }
@@ -39,6 +38,7 @@ export interface RunnerConfig {
   readonly runner: {
     readonly dataDir: string;
     readonly agentDir: string;
+    readonly conductorManifest: string;
     readonly analyticsConfigPath: string;
     readonly maxCommentChars: number;
     readonly globalConcurrency: 1;
@@ -164,7 +164,6 @@ const parseProject = (key: string, value: unknown): ProjectConfig => {
       "kanban_view_id",
       "repository",
       "default_branch",
-      "conductor_manifest",
       "publish",
       "verify_commands",
     ],
@@ -221,10 +220,6 @@ const parseProject = (key: string, value: unknown): ProjectConfig => {
       source.default_branch,
       `projects.${key}.default_branch`,
     ),
-    conductorManifest: string(
-      source.conductor_manifest,
-      `projects.${key}.conductor_manifest`,
-    ),
     publish: {
       mode,
       remote: string(publish.remote, `projects.${key}.publish.remote`),
@@ -260,6 +255,7 @@ export function parseConfig(input: unknown): RunnerConfig {
       "data_dir",
       "global_concurrency",
       "agent_dir",
+      "conductor_manifest",
       "analytics_config_path",
       "max_comment_chars",
     ],
@@ -311,6 +307,10 @@ export function parseConfig(input: unknown): RunnerConfig {
     runner: {
       dataDir: absolutePath(runner.data_dir, "runner.data_dir"),
       agentDir: absolutePath(runner.agent_dir, "runner.agent_dir"),
+      conductorManifest: absolutePath(
+        runner.conductor_manifest,
+        "runner.conductor_manifest",
+      ),
       analyticsConfigPath: absolutePath(
         runner.analytics_config_path,
         "runner.analytics_config_path",
