@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, realpath, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { RunHandle } from "pi-conductor";
@@ -54,7 +55,7 @@ const fakeApi = (
 
 describe("PiConductorGateway", () => {
   it("starts a library run in the task worktree with isolated run storage", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-conductor-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const worktree = join(dataDir, "jobs", "12", "worktree");
     await mkdir(worktree, { recursive: true });
     const calls: Array<{ manifest: string; options: unknown }> = [];
@@ -71,7 +72,10 @@ describe("PiConductorGateway", () => {
     await gateway.start(job(worktree), "Ship the fix", undefined);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.manifest).toBe(join(worktree, ".pi/conductor.yaml"));
+    const canonicalWorktree = await realpath(worktree);
+    expect(calls[0]?.manifest).toBe(
+      join(canonicalWorktree, ".pi/conductor.yaml"),
+    );
     const options = calls[0]?.options as {
       goal: string;
       baseDir: string;
@@ -85,7 +89,7 @@ describe("PiConductorGateway", () => {
   });
 
   it("resumes a recorded run and rejects missing durable run identity", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-conductor-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const worktree = join(dataDir, "jobs", "12", "worktree");
     await mkdir(worktree, { recursive: true });
     const calls: Array<{ manifest: string; options: unknown }> = [];
@@ -100,8 +104,9 @@ describe("PiConductorGateway", () => {
     );
 
     await gateway.resume(job(worktree, "run-123"), undefined);
+    const canonicalWorktree = await realpath(worktree);
     expect(calls[0]?.manifest).toBe(
-      `${join(worktree, ".pi/conductor.yaml")}#run-123`,
+      `${join(canonicalWorktree, ".pi/conductor.yaml")}#run-123`,
     );
 
     await expect(gateway.resume(job(worktree), undefined)).rejects.toThrow(
@@ -110,7 +115,7 @@ describe("PiConductorGateway", () => {
   });
 
   it("accepts a canonical persisted worktree when dataDir is a symlink", async () => {
-    const root = await mkdtemp(join("/tmp", "runner-conductor-data-"));
+    const root = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const canonicalDataDir = join(root, "canonical");
     const linkedDataDir = join(root, "linked");
     const worktree = join(canonicalDataDir, "jobs", "12", "worktree");
@@ -136,7 +141,7 @@ describe("PiConductorGateway", () => {
   });
 
   it("rejects a manifest path that escapes the worktree", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-conductor-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     await mkdir(join(dataDir, "jobs", "12", "worktree"), { recursive: true });
     const gateway = new PiConductorGateway(
       {
@@ -160,9 +165,9 @@ describe("PiConductorGateway", () => {
   });
 
   it("rejects an existing manifest symlink that escapes the worktree", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-conductor-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const worktree = join(dataDir, "jobs", "12", "worktree");
-    const outside = await mkdtemp(join("/tmp", "runner-conductor-outside-"));
+    const outside = await mkdtemp(join(tmpdir(), "runner-conductor-outside-"));
     await mkdir(join(worktree, ".pi"), { recursive: true });
     const { symlink, writeFile } = await import("node:fs/promises");
     await writeFile(join(outside, "conductor.yaml"), "manifest");
@@ -188,8 +193,8 @@ describe("PiConductorGateway", () => {
   });
 
   it("rejects a persisted worktree outside the configured task-data root", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-conductor-data-"));
-    const outside = await mkdtemp(join("/tmp", "runner-conductor-outside-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
+    const outside = await mkdtemp(join(tmpdir(), "runner-conductor-outside-"));
     const gateway = new PiConductorGateway(
       {
         dataDir,

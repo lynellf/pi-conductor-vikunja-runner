@@ -1,5 +1,13 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -55,7 +63,7 @@ const job = (
 });
 
 const createOrigin = async (): Promise<string> => {
-  const root = await mkdtemp(join("/tmp", "runner-git-origin-"));
+  const root = await mkdtemp(join(tmpdir(), "runner-git-origin-"));
   roots.push(root);
   const bare = join(root, "origin.git");
   const source = join(root, "source");
@@ -76,7 +84,7 @@ afterEach(async () => {
 describe("GitRepositoryManager", () => {
   it("clones, fetches, and creates a deterministic confined task worktree", async () => {
     const origin = await createOrigin();
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const manager = new GitRepositoryManager(dataDir);
 
@@ -86,7 +94,7 @@ describe("GitRepositoryManager", () => {
 
     expect(prepared.branch).toBe("pi/vikunja-12-fix-api-auth-injection");
     expect(prepared.worktree).toBe(
-      join(dataDir, "jobs", "12", "projects", "42", "worktree"),
+      await realpath(join(dataDir, "jobs", "12", "projects", "42", "worktree")),
     );
     expect(await readFile(join(prepared.worktree, "README.md"), "utf8")).toBe(
       "initial\n",
@@ -94,14 +102,14 @@ describe("GitRepositoryManager", () => {
     expect(await git(prepared.worktree, "branch", "--show-current")).toBe(
       prepared.branch,
     );
-    expect(prepared.worktree.startsWith(join(dataDir, "jobs", "12"))).toBe(
-      true,
-    );
+    expect(
+      prepared.worktree.startsWith(await realpath(join(dataDir, "jobs", "12"))),
+    ).toBe(true);
   });
 
   it("reuses repositories when dataDir is a symlink", async () => {
     const origin = await createOrigin();
-    const root = await mkdtemp(join("/tmp", "runner-git-data-link-"));
+    const root = await mkdtemp(join(tmpdir(), "runner-git-data-link-"));
     roots.push(root);
     const canonicalDataDir = join(root, "canonical");
     const linkedDataDir = join(root, "linked");
@@ -118,13 +126,15 @@ describe("GitRepositoryManager", () => {
     );
 
     expect(retry).toEqual(first);
-    expect(retry.worktree.startsWith(canonicalDataDir)).toBe(true);
+    expect(retry.worktree.startsWith(await realpath(canonicalDataDir))).toBe(
+      true,
+    );
   });
 
   it("rejects a task directory symlink that escapes the data directory", async () => {
     const origin = await createOrigin();
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
-    const outside = await mkdtemp(join("/tmp", "runner-git-outside-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
+    const outside = await mkdtemp(join(tmpdir(), "runner-git-outside-"));
     roots.push(dataDir, outside);
     await mkdir(join(dataDir, "jobs"), { recursive: true });
     await symlink(outside, join(dataDir, "jobs", "12"));
@@ -135,7 +145,7 @@ describe("GitRepositoryManager", () => {
   });
 
   it("runs configured verification commands in order and reports bounded output", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const calls: Array<{
       command: string;
@@ -177,14 +187,19 @@ describe("GitRepositoryManager", () => {
     expect(result.worktreeClean).toBe(true);
     expect(result.uncommittedFiles).toEqual([]);
     expect(result.commands[1]?.outputTail.length).toBe(4000);
+    const canonicalWorktree = await realpath(worktree);
     expect(calls).toEqual([
-      { command: "passing-check", args: ["--strict"], cwd: worktree },
-      { command: "failing-check", args: [], cwd: worktree },
+      {
+        command: "passing-check",
+        args: ["--strict"],
+        cwd: canonicalWorktree,
+      },
+      { command: "failing-check", args: [], cwd: canonicalWorktree },
     ]);
   });
 
   it("does not fail a successful verification command with output over 1 MiB", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const fakeGit = {
       async run(): Promise<string> {
@@ -219,7 +234,7 @@ describe("GitRepositoryManager", () => {
   });
 
   it("reports every uncommitted worktree path from Git status", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const fakeGit = {
       async run(args: readonly string[], _cwd: string): Promise<string> {
@@ -249,8 +264,8 @@ describe("GitRepositoryManager", () => {
   });
 
   it("rejects escaped worktrees and invalid persisted branches before Git commands", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
-    const outside = await mkdtemp(join("/tmp", "runner-git-outside-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
+    const outside = await mkdtemp(join(tmpdir(), "runner-git-outside-"));
     roots.push(dataDir, outside);
     const worktree = join(dataDir, "jobs", "12", "worktree");
     const escaped = join(dataDir, "jobs", "12", "escaped");
@@ -282,7 +297,7 @@ describe("GitRepositoryManager", () => {
   });
 
   it("does not invoke Git for local publishing", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const calls: string[][] = [];
     const fakeGit = {
@@ -312,7 +327,7 @@ describe("GitRepositoryManager", () => {
   });
 
   it("pushes only the configured branch in push mode", async () => {
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const calls: string[][] = [];
     const fakeGit = {
@@ -346,7 +361,7 @@ describe("GitRepositoryManager", () => {
 
   it("reuses a persisted branch and worktree on retry without replacing files", async () => {
     const origin = await createOrigin();
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const manager = new GitRepositoryManager(dataDir);
     const first = await manager.prepare(job(), project(origin), {
@@ -368,7 +383,7 @@ describe("GitRepositoryManager", () => {
   it("isolates fallback worktrees when the same task changes projects", async () => {
     const firstOrigin = await createOrigin();
     const secondOrigin = await createOrigin();
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const manager = new GitRepositoryManager(dataDir);
     const first = await manager.prepare(job(), project(firstOrigin), {
@@ -393,7 +408,7 @@ describe("GitRepositoryManager", () => {
     );
 
     expect(second.worktree).toBe(
-      join(dataDir, "jobs", "12", "projects", "43", "worktree"),
+      await realpath(join(dataDir, "jobs", "12", "projects", "43", "worktree")),
     );
     expect(second.worktree).not.toBe(first.worktree);
     await expect(
@@ -404,7 +419,7 @@ describe("GitRepositoryManager", () => {
   it("rejects an existing clone whose origin no longer matches configuration", async () => {
     const origin = await createOrigin();
     const replacement = await createOrigin();
-    const dataDir = await mkdtemp(join("/tmp", "runner-git-data-"));
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-git-data-"));
     roots.push(dataDir);
     const manager = new GitRepositoryManager(dataDir);
     await manager.prepare(job(), project(origin), { taskTitle: "First" });

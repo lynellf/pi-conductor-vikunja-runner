@@ -353,7 +353,17 @@ export class GitRepositoryManager {
     validateBranch(worktree.branch);
     const dataRoot = await this.confinedDataRoot();
     const candidate = resolve(worktree.worktree);
-    this.assertLexicallyConfined(dataRoot, candidate);
+    // macOS and symlinked installations can expose the same directory through
+    // a logical and canonical absolute path. Accept either lexical root, then
+    // enforce the security boundary against canonical real paths below.
+    if (
+      !isInside(resolve(this.dataDir), candidate) &&
+      !isInside(resolve(dataRoot), candidate)
+    ) {
+      throw new RepositoryPrepareError(
+        "worktree escapes configured data directory",
+      );
+    }
     const realWorktree = await realpath(candidate);
     this.assertConfined(dataRoot, realWorktree, "worktree");
     return realWorktree;
