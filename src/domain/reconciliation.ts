@@ -1,4 +1,5 @@
 import type { RemoteMutationIntent } from "../persistence/contracts.js";
+import { isRetryableVikunjaError } from "../vikunja/errors.js";
 import type { VikunjaGateway } from "../vikunja/gateway.js";
 import type { JobId, JobStore } from "./jobs.js";
 import type { ProjectId, ProjectLayout, TaskId } from "./types.js";
@@ -70,6 +71,23 @@ export async function reconcileStartup(
   );
   for (const intent of await input.store.pendingMutationIntents()) {
     try {
+      const owningJob =
+        intent.jobId === null ? null : await input.store.getJob(intent.jobId);
+      // A claiming row proves the process exited before the claim sequence was
+      // committed locally. Never replay its partial Ready -> Running saga on
+      // startup: classify the interrupted claim from the observed task first.
+      // The reconciliation below will preserve Ready or compensate Running.
+      if (
+        owningJob?.state === "claiming" &&
+        intent.idempotencyKey.startsWith(`job:${owningJob.id}:claim:`)
+      ) {
+        await input.store.failMutation(
+          intent.idempotencyKey,
+          "claim mutation belongs to an interrupted claim",
+        );
+        mutationFailures += 1;
+        continue;
+      }
       const abandonedQuestionComment =
         intent.operation === "post_comment" &&
         abandonedQuestionPrefixes.some(
@@ -91,55 +109,52 @@ export async function reconcileStartup(
       // Review) and could resurrect or overwrite the failed task on restart.
       // Mark it terminal without touching Vikunja; the explicit failure move
       // remains eligible for guarded replay.
-      if (intent.jobId !== null) {
-        const job = await input.store.getJob(intent.jobId);
-        if (job?.state === "failed") {
-          const reviewCommentKey = `job:${job.id}:completion:review-comment`;
-          const staleClaimIntent =
-            (intent.operation === "assign_runner" &&
-              intent.idempotencyKey === `job:${job.id}:claim:assign`) ||
-            (intent.operation === "post_comment" &&
-              intent.idempotencyKey === `job:${job.id}:claim:comment`);
-          if (staleClaimIntent) {
-            await input.store.failMutation(
-              intent.idempotencyKey,
-              "claim mutation belongs to a terminally failed job",
-            );
-            mutationFailures += 1;
-            continue;
-          }
+      if (owningJob?.state === "failed") {
+        const job = owningJob;
+        const reviewCommentKey = `job:${job.id}:completion:review-comment`;
+        const staleClaimIntent =
+          (intent.operation === "assign_runner" &&
+            intent.idempotencyKey === `job:${job.id}:claim:assign`) ||
+          (intent.operation === "post_comment" &&
+            intent.idempotencyKey === `job:${job.id}:claim:comment`);
+        if (staleClaimIntent) {
+          await input.store.failMutation(
+            intent.idempotencyKey,
+            "claim mutation belongs to a terminally failed job",
+          );
+          mutationFailures += 1;
+          continue;
+        }
+        if (
+          intent.operation === "post_comment" &&
+          intent.idempotencyKey === reviewCommentKey
+        ) {
+          await input.store.failMutation(
+            intent.idempotencyKey,
+            "review report belongs to a terminally failed job",
+          );
+          mutationFailures += 1;
+          continue;
+        }
+        if (intent.operation === "move_task") {
+          const layout = input.layouts.get(job.projectId);
+          const request =
+            typeof intent.request === "object" &&
+            intent.request !== null &&
+            !Array.isArray(intent.request)
+              ? (intent.request as ReconciliationRequest)
+              : null;
+          const targetBucket = request === null ? undefined : request.bucketId;
           if (
-            intent.operation === "post_comment" &&
-            intent.idempotencyKey === reviewCommentKey
+            layout === undefined ||
+            targetBucket !== layout.buckets.Failed.id
           ) {
             await input.store.failMutation(
               intent.idempotencyKey,
-              "review report belongs to a terminally failed job",
+              "move belongs to a terminally failed job",
             );
             mutationFailures += 1;
             continue;
-          }
-          if (intent.operation === "move_task") {
-            const layout = input.layouts.get(job.projectId);
-            const request =
-              typeof intent.request === "object" &&
-              intent.request !== null &&
-              !Array.isArray(intent.request)
-                ? (intent.request as ReconciliationRequest)
-                : null;
-            const targetBucket =
-              request === null ? undefined : request.bucketId;
-            if (
-              layout === undefined ||
-              targetBucket !== layout.buckets.Failed.id
-            ) {
-              await input.store.failMutation(
-                intent.idempotencyKey,
-                "move belongs to a terminally failed job",
-              );
-              mutationFailures += 1;
-              continue;
-            }
           }
         }
       }
@@ -160,9 +175,17 @@ export async function reconcileStartup(
       if (error instanceof ReconciliationRequestError) {
         await input.store.failMutation(intent.idempotencyKey, error.message);
         mutationFailures += 1;
-      } else {
-        // A transport failure leaves the idempotent intent pending for the next startup.
+      } else if (isRetryableVikunjaError(error)) {
+        // A classified transport failure remains pending for the next daemon
+        // reconciliation cycle. Permanent authorization, validation, and
+        // semantic errors must not create an immortal outbox entry.
         mutationsPending += 1;
+      } else {
+        await input.store.failMutation(
+          intent.idempotencyKey,
+          "remote mutation failed permanently",
+        );
+        mutationFailures += 1;
       }
     }
   }

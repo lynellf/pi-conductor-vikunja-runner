@@ -195,6 +195,59 @@ describe("runner daemon", () => {
     ]);
   });
 
+  it("reconciles durable work between ordinary polling cycles", async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    let reconciliations = 0;
+    let cycles = 0;
+
+    await runDaemon(
+      "/etc/runner.yaml",
+      {
+        loadConfig: async () => config(),
+        readCredential: async () => "credential",
+        createRuntime: async () => runtime(),
+        startAnalytics: async () => ({ shutdown: async () => undefined }),
+        validateLayouts: async () => new Map(),
+        reconcile: async () => {
+          reconciliations += 1;
+          calls.push(`reconcile:${reconciliations}`);
+          return {
+            jobsChecked: 0,
+            jobsFailed: 0,
+            questionsInterrupted: 0,
+            manualOverrides: 0,
+            mutationsReplayed: 0,
+            mutationsPending: 0,
+            mutationFailures: 0,
+          };
+        },
+        resumeJobs: async () => {
+          calls.push("resume");
+          return 0;
+        },
+        runCycle: async () => {
+          cycles += 1;
+          calls.push(`cycle:${cycles}`);
+          if (cycles === 2) controller.abort("done");
+          return report;
+        },
+        sleep: async () => calls.push("sleep"),
+      },
+      controller.signal,
+    );
+
+    expect(calls).toEqual([
+      "reconcile:1",
+      "resume",
+      "cycle:1",
+      "sleep",
+      "reconcile:2",
+      "resume",
+      "cycle:2",
+    ]);
+  });
+
   it("continues coding when the analytics credential is unavailable", async () => {
     const controller = new AbortController();
     const errors: Error[] = [];

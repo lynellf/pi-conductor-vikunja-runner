@@ -7,6 +7,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   createProductionHost,
+  type Host,
   type HostFactoryContext,
   type ResumeRunOptions,
   type RunHandle,
@@ -47,7 +48,15 @@ export interface PiConductorGatewayOptions {
   readonly agentDir: string;
   readonly projects: Readonly<Record<string, ProjectConfig>>;
   readonly modelRegistry?: ModelRegistry;
+  /** Test seam for exercising the real pi-conductor API without a model key. */
+  readonly hostFactory?: PiConductorHostFactory;
 }
+
+export type PiConductorHostFactory = (
+  context: HostFactoryContext,
+  worktree: string,
+  ui: RunnerUiContext,
+) => Host;
 
 export class ConductorIntegrationError extends Error {
   public constructor(message: string) {
@@ -74,6 +83,7 @@ export class PiConductorGateway implements ConductorGateway {
   private readonly projects: Readonly<Record<string, ProjectConfig>>;
   private readonly modelRegistry: ModelRegistry;
   private readonly api: ConductorApi;
+  private readonly hostFactory: PiConductorHostFactory | undefined;
 
   public constructor(
     options: PiConductorGatewayOptions,
@@ -94,6 +104,7 @@ export class PiConductorGateway implements ConductorGateway {
         join(this.agentDir, "models.json"),
       );
     this.api = api;
+    this.hostFactory = options.hostFactory;
   }
 
   public async start(
@@ -198,7 +209,10 @@ export class PiConductorGateway implements ConductorGateway {
     context: HostFactoryContext,
     worktree: string,
     ui: RunnerUiContext,
-  ) {
+  ): Host {
+    if (this.hostFactory !== undefined) {
+      return this.hostFactory(context, worktree, ui);
+    }
     return createProductionHost({
       extension: {
         modelRegistry: this.modelRegistry,

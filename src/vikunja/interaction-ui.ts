@@ -14,6 +14,7 @@ import {
   type ProjectLayout,
   type UserId,
 } from "../domain/types.js";
+import { isRetryableVikunjaError } from "./errors.js";
 import type { VikunjaGateway } from "./gateway.js";
 
 /** Dependencies for the durable Vikunja-backed ask_user bridge. Spec §11.1. */
@@ -154,6 +155,10 @@ const moveTask = async (
   expectedBucket: BucketId,
   idempotencyKey: string,
 ): Promise<void> => {
+  const failPermanentMutation = async (message: string): Promise<void> => {
+    if (typeof options.store.failMutation !== "function") return;
+    await options.store.failMutation(idempotencyKey, message);
+  };
   await deliverMutation(
     options,
     "move_task",
@@ -164,7 +169,13 @@ const moveTask = async (
       try {
         current = await options.gateway.getTask(options.job.taskId);
       } catch (error) {
-        throw new RetryableQuestionMoveError(error);
+        if (isRetryableVikunjaError(error)) {
+          throw new RetryableQuestionMoveError(error);
+        }
+        await failPermanentMutation(
+          "question bucket move failed because the task could not be read",
+        );
+        throw error;
       }
       const sameProject = current.projectId === options.job.projectId;
       if (sameProject && !current.done && current.bucketId === bucket) {
@@ -182,7 +193,47 @@ const moveTask = async (
       try {
         await options.gateway.moveTask(options.job.taskId, bucket);
       } catch (error) {
-        throw new RetryableQuestionMoveError(error);
+        // A malformed or lost response can hide a successful move. Observe the
+        // task before deciding whether this is retryable or terminal.
+        let observed: typeof current;
+        try {
+          observed = await options.gateway.getTask(options.job.taskId);
+        } catch (confirmationError) {
+          if (
+            isRetryableVikunjaError(error) ||
+            isRetryableVikunjaError(confirmationError)
+          ) {
+            throw new RetryableQuestionMoveError(error);
+          }
+          await failPermanentMutation(
+            "question bucket move failed and its result could not be confirmed",
+          );
+          throw error;
+        }
+        const sameObservedProject =
+          observed.projectId === options.job.projectId;
+        if (
+          sameObservedProject &&
+          !observed.done &&
+          observed.bucketId === bucket
+        ) {
+          return null;
+        }
+        if (
+          !sameObservedProject ||
+          observed.done ||
+          observed.bucketId !== expectedBucket
+        ) {
+          await failPermanentMutation(
+            `task state superseded move (project ${observed.projectId}, bucket ${observed.bucketId}, done=${observed.done})`,
+          );
+          throw manualOverrideError(observed);
+        }
+        if (isRetryableVikunjaError(error)) {
+          throw new RetryableQuestionMoveError(error);
+        }
+        await failPermanentMutation("question bucket move was rejected");
+        throw error;
       }
       return null;
     },
