@@ -40,7 +40,6 @@ const project = (repository: string): ProjectConfig => ({
   kanbanViewId: 8 as ProjectConfig["kanbanViewId"],
   repository,
   defaultBranch: "main",
-  conductorManifest: ".pi/conductor.yaml",
   publish: { mode: "local", remote: "origin" },
   verifyCommands: [["pnpm", "test"]],
 });

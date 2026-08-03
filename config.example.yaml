@@ -14,6 +14,7 @@ runner:
   data_dir: "/var/lib/pi-conductor-vikunja-runner"
   global_concurrency: 1
   agent_dir: "/var/lib/pi-conductor-vikunja-runner/pi-agent"
+  conductor_manifest: "/absolute/path/to/.pi/conductor.yaml"
   analytics_config_path: "/run/credentials/conductor-analytics.json"
   max_comment_chars: 12000
 
@@ -23,7 +24,6 @@ projects:
     kanban_view_id: 8
     repository: "git@github.com:lynellf/pi-conductor.git"
     default_branch: "main"
-    conductor_manifest: ".pi/conductor.yaml"
     publish:
       mode: "local"
       remote: "origin"

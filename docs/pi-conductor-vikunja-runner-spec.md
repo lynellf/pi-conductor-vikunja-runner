@@ -174,6 +174,7 @@ runner:
   data_dir: "/var/lib/pi-conductor-vikunja-runner"
   global_concurrency: 1
   agent_dir: "/var/lib/pi-conductor-vikunja-runner/pi-agent"
+  conductor_manifest: "/absolute/path/to/.pi/conductor.yaml"
   analytics_config_path: "/run/credentials/conductor-analytics.json"
   max_comment_chars: 12000
 
@@ -183,7 +184,6 @@ projects:
     kanban_view_id: 8
     repository: "git@github.com:lynellf/pi-conductor.git"
     default_branch: "main"
-    conductor_manifest: ".pi/conductor.yaml"
     publish:
       mode: "push_branch" # "local" or "push_branch"
       remote: "origin"
@@ -197,7 +197,9 @@ Rules:
 
 - Project keys, view IDs, runner user IDs, and task IDs are numeric branded IDs internally.
 - Only `owner_user_id` may answer questions or issue `/pi` control commands.
-- Repository URL, default branch, manifest path, verification commands, and publish mode come only from trusted configuration.
+- Repository URL, default branch, verification commands, and publish mode come only from trusted configuration.
+- `runner.conductor_manifest` is the one operator-maintained pi-conductor manifest used by every project. It must be an absolute path. Project-level manifest overrides are rejected.
+- Relative `system_prompt` paths in the shared manifest require pi-conductor manifest version 2 and resolve from the shared manifest's directory. Version 1 manifests are accepted only when every declared prompt path is absolute.
 - `display_identifier` is informational and must never select a repository.
 - `global_concurrency` must equal `1` in version 1.
 - Plain HTTP is rejected unless `allow_insecure_http` is explicitly true and the host is loopback, RFC1918, or the Tailscale CGNAT range.
@@ -275,7 +277,7 @@ Interpret completion as follows:
 - `exitReason === "aborted"`: move to **Failed** unless a human override already selected another bucket.
 - A thrown setup/runtime exception: move to **Failed** with a stable error code.
 
-The repository's `.pi/conductor.yaml` must explicitly list every tool required by each role. The runner must not patch role tool allowlists at runtime.
+The shared `runner.conductor_manifest` must explicitly list every tool required by each role. The runner passes it directly to pi-conductor and must not copy it, rewrite it, or patch role tool allowlists at runtime. Pi-conductor's internal per-run checkpoint data is durable runtime state, not another operator-managed manifest.
 
 ## 11. Human interaction through Vikunja
 
@@ -421,14 +423,14 @@ Transient Vikunja reads retry with bounded exponential backoff and jitter. Do no
 
 ## 16. Security requirements
 
-- Run under a dedicated Linux user with no sudo, no Docker socket, and no write access outside the configured data directory and repository worktrees.
+- Run under a dedicated Linux user with no sudo, no Docker socket, and no write access outside the configured data directory and repository worktrees. The service user receives read/traverse access only to the configured shared manifest and its referenced prompt files.
 - Use a dedicated Vikunja API token from the runner account. The account receives write access only to managed coding projects.
 - Load the Vikunja token, model credentials, analytics token/config, and Git private keys from protected files or the service credential mechanism. File permissions must be `0600` or stricter.
 - Redact secrets from structured logs and error comments.
 - Validate every Vikunja response before using it. Treat task content and comments as untrusted model input.
-- Resolve and verify filesystem paths before file or process operations. Reject paths escaping the configured data directory or worktree.
+- Resolve and verify filesystem paths before file or process operations. Reject worktree paths escaping the configured data directory. The shared manifest and prompt files are explicitly trusted, absolute/read-only configuration inputs and are not required to live inside a worktree.
 - Spawn commands with argument arrays. Never evaluate task text as shell, JavaScript, templates, repository URLs, paths, or configuration.
-- Permit only configured repositories, branches, manifests, verification commands, and remotes.
+- Permit only the configured repositories, branches, single shared manifest, verification commands, and remotes.
 - Do not expose an inbound network listener in version 1.
 - Prefer HTTPS. Plain HTTP requires the explicit private-network override described in configuration.
 - Run `pnpm audit --prod` before releases. Critical or reachable high-severity vulnerabilities block deployment.
@@ -518,7 +520,7 @@ pnpm runner:once -- --config /etc/pi-conductor-vikunja-runner/config.yaml
 pnpm runner:health -- --config /etc/pi-conductor-vikunja-runner/config.yaml
 ```
 
-`runner:validate` performs read-only configuration, credentials, Vikunja layout, repository, manifest, model-provider, and analytics checks. `runner:once` runs one polling/claim cycle and then waits for any claimed job to terminate. `runner:health` verifies configuration, database access, Vikunja connectivity, and daemon heartbeat without starting work.
+`runner:validate` performs read-only configuration, credentials, Vikunja layout, repository, shared-manifest, prompt, model-provider, and analytics checks. The shared manifest is validated once per command, not once per project. `runner:once` runs one polling/claim cycle and then waits for any claimed job to terminate. `runner:health` verifies configuration, database access, Vikunja connectivity, and daemon heartbeat without starting work.
 
 ## 20. Testing strategy
 
@@ -591,7 +593,7 @@ Target at least 85% branch and line coverage for domain, claiming, reconciliatio
 - Increase concurrency or add another runner replica.
 - Add task attachments or other new model-input sources.
 - Change the database schema outside an approved migration.
-- Modify `pi-conductor`, its analytics plugin, or repository manifests to accommodate the runner.
+- Modify `pi-conductor`, its analytics plugin, or managed repositories to accommodate the runner.
 
 ### Never do
 
@@ -613,7 +615,7 @@ The version 1 implementation is complete when all of the following are demonstra
 4. The numeric project ID, not its name or identifier, selects the repository.
 5. The runner creates a confined worktree and deterministic task branch from the configured default branch.
 6. The task-to-job-to-run mapping survives a daemon restart.
-7. `pi-conductor` is invoked through its library API with the repository's manifest and worktree as `cwd`.
+7. `pi-conductor` is invoked through its library API with the one configured shared manifest and the selected repository worktree as `cwd`; no project checkout or runner profile contains a copied manifest.
 8. A conductor `ask_user` call moves the task to **Waiting**, posts one question, accepts one valid owner reply, moves back to **Running**, and returns that reply to the same live tool call.
 9. Invalid confirm/select replies do not resume the run and receive a bounded correction.
 10. Restart during an unresolved question fails safely with `WAIT_INTERRUPTED`; no answer is invented or lost silently.

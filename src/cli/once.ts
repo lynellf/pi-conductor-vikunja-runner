@@ -87,7 +87,7 @@ const createRuntime: OnceRuntimeFactory = async (config, token) => {
       conductor: new PiConductorGateway({
         dataDir: config.runner.dataDir,
         agentDir: config.runner.agentDir,
-        projects: config.projects,
+        conductorManifest: config.runner.conductorManifest,
       }),
       close: () => store.close(),
     };

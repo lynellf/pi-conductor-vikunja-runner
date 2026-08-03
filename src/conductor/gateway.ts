@@ -15,7 +15,6 @@ import {
   type StartRunOptions,
   startRun,
 } from "pi-conductor";
-import type { ProjectConfig } from "../config/config.js";
 import type { Job } from "../domain/jobs.js";
 
 /** The UI bridge supplied by the Vikunja interaction adapter. */
@@ -46,7 +45,7 @@ export interface ConductorApi {
 export interface PiConductorGatewayOptions {
   readonly dataDir: string;
   readonly agentDir: string;
-  readonly projects: Readonly<Record<string, ProjectConfig>>;
+  readonly conductorManifest: string;
   readonly modelRegistry?: ModelRegistry;
   /** Test seam for exercising the real pi-conductor API without a model key. */
   readonly hostFactory?: PiConductorHostFactory;
@@ -80,7 +79,7 @@ const inside = (root: string, candidate: string): boolean => {
 export class PiConductorGateway implements ConductorGateway {
   private readonly dataDir: string;
   private readonly agentDir: string;
-  private readonly projects: Readonly<Record<string, ProjectConfig>>;
+  private readonly conductorManifest: string;
   private readonly modelRegistry: ModelRegistry;
   private readonly api: ConductorApi;
   private readonly hostFactory: PiConductorHostFactory | undefined;
@@ -89,14 +88,18 @@ export class PiConductorGateway implements ConductorGateway {
     options: PiConductorGatewayOptions,
     api: ConductorApi = defaultApi,
   ) {
-    if (!isAbsolute(options.dataDir) || !isAbsolute(options.agentDir)) {
+    if (
+      !isAbsolute(options.dataDir) ||
+      !isAbsolute(options.agentDir) ||
+      !isAbsolute(options.conductorManifest)
+    ) {
       throw new ConductorIntegrationError(
-        "dataDir and agentDir must be absolute paths",
+        "dataDir, agentDir, and conductorManifest must be absolute paths",
       );
     }
     this.dataDir = resolve(options.dataDir);
     this.agentDir = resolve(options.agentDir);
-    this.projects = options.projects;
+    this.conductorManifest = resolve(options.conductorManifest);
     this.modelRegistry =
       options.modelRegistry ??
       ModelRegistry.create(
@@ -149,12 +152,6 @@ export class PiConductorGateway implements ConductorGateway {
     if (job.worktree === null || job.worktree.trim() === "") {
       throw new ConductorIntegrationError("job has no prepared worktree");
     }
-    const project = this.projects[String(job.projectId)];
-    if (project === undefined) {
-      throw new ConductorIntegrationError(
-        `project ${job.projectId} is not configured`,
-      );
-    }
     let dataRoot: string;
     let realWorktree: string;
     try {
@@ -171,32 +168,13 @@ export class PiConductorGateway implements ConductorGateway {
         "worktree escapes configured task data directory",
       );
     }
-    const manifestPath = resolve(realWorktree, project.conductorManifest);
-    if (!inside(realWorktree, manifestPath)) {
-      throw new ConductorIntegrationError(
-        "conductor manifest escapes the task worktree",
-      );
-    }
-    // A lexical path can still escape through a symlink in the checked-out
-    // worktree. Resolve an existing manifest before handing it to pi-conductor;
-    // a missing manifest is left for pi-conductor's normal manifest error so
-    // lightweight adapters can still validate path composition independently.
+    let manifestPath: string;
     try {
-      const realManifest = await realpath(manifestPath);
-      if (!inside(realWorktree, realManifest)) {
-        throw new ConductorIntegrationError(
-          "conductor manifest escapes the task worktree",
-        );
-      }
-      return { worktree: realWorktree, manifestPath: realManifest };
+      manifestPath = await realpath(this.conductorManifest);
     } catch (error) {
-      if (error instanceof ConductorIntegrationError) throw error;
-      const code = (error as { code?: unknown }).code;
-      if (code !== "ENOENT") {
-        throw new ConductorIntegrationError(
-          "conductor manifest could not be inspected",
-        );
-      }
+      throw new ConductorIntegrationError(
+        `configured conductor manifest is unavailable: ${String(error)}`,
+      );
     }
     return { worktree: realWorktree, manifestPath };
   }

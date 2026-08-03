@@ -28,6 +28,9 @@ pnpm runner:once -- --config /path/to/config.yaml
 ```
 
 Credentials are protected files referenced by configuration, never YAML values.
+Set `runner.conductor_manifest` to the absolute path of your one existing
+pi-conductor manifest. That manifest is shared by every configured project; the
+runner has no default path and rejects per-project overrides.
 See [`docs/operations.md`](docs/operations.md) before running against live
 projects.
 
@@ -60,7 +63,9 @@ External boundaries are dependency-injected behind typed interfaces:
 
 SQLite migrations are versioned in `src/persistence/sqlite.ts` and applied in a
 single immediate transaction. Runtime state and conductor sessions live only
-under the configured data directory.
+under the configured data directory. The shared conductor manifest and its role
+prompts remain at their configured source paths and are never copied into a
+project or runner profile.
 
 ## Documentation
 

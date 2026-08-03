@@ -1,10 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
 import type { ProjectConfig, RunnerConfig } from "../config/config.js";
 import type { ProjectId } from "../domain/types.js";
 import type { VikunjaGateway } from "../vikunja/gateway.js";
 import {
   validateAnalyticsConfiguration,
+  validateConductorRuntime,
   validateRepositoryRuntime,
 } from "./runtime-validation.js";
 
@@ -22,19 +22,9 @@ export interface ValidateRunnerInput {
   readonly readTextFile?: ReadTextFile;
   readonly statFile?: StatFile;
   readonly validateAnalytics?: (config: RunnerConfig) => Promise<void>;
-  readonly validateProjectRuntime?: (
-    project: ProjectConfig,
-    config: RunnerConfig,
-  ) => Promise<void>;
+  readonly validateConductor?: (config: RunnerConfig) => Promise<void>;
+  readonly validateProjectRuntime?: (project: ProjectConfig) => Promise<void>;
 }
-
-const isConfinedRelativePath = (value: string): boolean => {
-  if (isAbsolute(value)) return false;
-  const normalized = resolve("/validation-root", value);
-  const root = resolve("/validation-root");
-  const escaped = relative(root, normalized);
-  return escaped === "" || (!escaped.startsWith("..") && !isAbsolute(escaped));
-};
 
 const validateBranchName = (value: string, field: string): void => {
   const components = value.split("/");
@@ -62,11 +52,6 @@ const validateBranchName = (value: string, field: string): void => {
 export const validateProjectConfiguration = (project: ProjectConfig): void => {
   if (project.repository.startsWith("-")) {
     throw new Error(`projects.${project.id}.repository cannot start with '-'`);
-  }
-  if (!isConfinedRelativePath(project.conductorManifest)) {
-    throw new Error(
-      `projects.${project.id}.conductor_manifest must remain inside the worktree`,
-    );
   }
   validateBranchName(
     project.defaultBranch,
@@ -147,11 +132,9 @@ export const validateRunner = async (
   await (input.validateAnalytics ?? validateAnalyticsConfiguration)(
     input.config,
   );
+  await (input.validateConductor ?? validateConductorRuntime)(input.config);
   for (const project of projects) {
-    await (input.validateProjectRuntime ?? validateRepositoryRuntime)(
-      project,
-      input.config,
-    );
+    await (input.validateProjectRuntime ?? validateRepositoryRuntime)(project);
     await input.gateway.validateProjectLayout(project);
   }
   return {

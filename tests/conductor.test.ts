@@ -6,23 +6,10 @@ import { type RunHandle, StubHost } from "pi-conductor";
 import { describe, expect, it } from "vitest";
 import {
   type ConductorApi,
-  ConductorIntegrationError,
   PiConductorGateway,
 } from "../src/conductor/gateway.js";
-import type { ProjectConfig } from "../src/config/config.js";
 import type { Job } from "../src/domain/jobs.js";
 import { projectId, taskId } from "../src/domain/types.js";
-
-const project = (): ProjectConfig => ({
-  id: projectId(42),
-  displayIdentifier: "PC",
-  kanbanViewId: 8 as ProjectConfig["kanbanViewId"],
-  repository: "git@example.test:owner/repo.git",
-  defaultBranch: "main",
-  conductorManifest: ".pi/conductor.yaml",
-  publish: { mode: "local", remote: "origin" },
-  verifyCommands: [["pnpm", "test"]],
-});
 
 const job = (worktree: string, runId: string | null = null): Job => ({
   id: "job-1" as Job["id"],
@@ -58,28 +45,31 @@ describe("PiConductorGateway", () => {
     const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-stub-"));
     const agentDir = join(dataDir, "agent");
     const worktree = join(dataDir, "jobs", "12", "worktree");
-    await mkdir(join(worktree, ".pi", "roles"), { recursive: true });
+    const manifestDir = join(dataDir, "shared-conductor");
+    const manifestPath = join(manifestDir, "conductor.yaml");
+    await mkdir(join(manifestDir, "roles"), { recursive: true });
+    await mkdir(worktree, { recursive: true });
     await mkdir(agentDir, { recursive: true });
     await writeFile(
-      join(worktree, ".pi", "conductor.yaml"),
+      manifestPath,
       [
-        "version: 1",
+        "version: 2",
         "roles:",
         "  - name: orchestrator",
         "    is_orchestrator: true",
-        "    system_prompt: .pi/roles/orchestrator.md",
+        "    system_prompt: roles/orchestrator.md",
         "    tools: [end]",
         "",
       ].join("\n"),
     );
     await writeFile(
-      join(worktree, ".pi", "roles", "orchestrator.md"),
+      join(manifestDir, "roles", "orchestrator.md"),
       "Finish the deterministic test run.",
     );
     const gateway = new PiConductorGateway({
       dataDir,
       agentDir,
-      projects: { "42": project() },
+      conductorManifest: manifestPath,
       hostFactory: (context, cwd) =>
         new StubHost({
           runId: context.runId,
@@ -111,13 +101,15 @@ describe("PiConductorGateway", () => {
   it("starts a library run in the task worktree with isolated run storage", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const worktree = join(dataDir, "jobs", "12", "worktree");
+    const manifestPath = join(dataDir, "conductor.yaml");
     await mkdir(worktree, { recursive: true });
+    await writeFile(manifestPath, "version: 2\nroles: []\n");
     const calls: Array<{ manifest: string; options: unknown }> = [];
     const gateway = new PiConductorGateway(
       {
         dataDir,
         agentDir: join(dataDir, "agent"),
-        projects: { "42": project() },
+        conductorManifest: manifestPath,
         modelRegistry: {} as ModelRegistry,
       },
       fakeApi(calls),
@@ -126,10 +118,7 @@ describe("PiConductorGateway", () => {
     await gateway.start(job(worktree), "Ship the fix", undefined);
 
     expect(calls).toHaveLength(1);
-    const canonicalWorktree = await realpath(worktree);
-    expect(calls[0]?.manifest).toBe(
-      join(canonicalWorktree, ".pi/conductor.yaml"),
-    );
+    expect(calls[0]?.manifest).toBe(await realpath(manifestPath));
     const options = calls[0]?.options as {
       goal: string;
       baseDir: string;
@@ -145,23 +134,22 @@ describe("PiConductorGateway", () => {
   it("resumes a recorded run and rejects missing durable run identity", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const worktree = join(dataDir, "jobs", "12", "worktree");
+    const manifestPath = join(dataDir, "conductor.yaml");
     await mkdir(worktree, { recursive: true });
+    await writeFile(manifestPath, "version: 2\nroles: []\n");
     const calls: Array<{ manifest: string; options: unknown }> = [];
     const gateway = new PiConductorGateway(
       {
         dataDir,
         agentDir: join(dataDir, "agent"),
-        projects: { "42": project() },
+        conductorManifest: manifestPath,
         modelRegistry: {} as ModelRegistry,
       },
       fakeApi(calls),
     );
 
     await gateway.resume(job(worktree, "run-123"), undefined);
-    const canonicalWorktree = await realpath(worktree);
-    expect(calls[0]?.manifest).toBe(
-      `${join(canonicalWorktree, ".pi/conductor.yaml")}#run-123`,
-    );
+    expect(calls[0]?.manifest).toBe(`${await realpath(manifestPath)}#run-123`);
 
     await expect(gateway.resume(job(worktree), undefined)).rejects.toThrow(
       "job has no conductor run ID",
@@ -173,7 +161,9 @@ describe("PiConductorGateway", () => {
     const canonicalDataDir = join(root, "canonical");
     const linkedDataDir = join(root, "linked");
     const worktree = join(canonicalDataDir, "jobs", "12", "worktree");
+    const manifestPath = join(root, "conductor.yaml");
     await mkdir(worktree, { recursive: true });
+    await writeFile(manifestPath, "version: 2\nroles: []\n");
     await symlink(canonicalDataDir, linkedDataDir);
     const canonicalWorktree = await realpath(worktree);
     const calls: Array<{ manifest: string; options: unknown }> = [];
@@ -181,7 +171,7 @@ describe("PiConductorGateway", () => {
       {
         dataDir: linkedDataDir,
         agentDir: join(canonicalDataDir, "agent"),
-        projects: { "42": project() },
+        conductorManifest: manifestPath,
         modelRegistry: {} as ModelRegistry,
       },
       fakeApi(calls),
@@ -189,52 +179,32 @@ describe("PiConductorGateway", () => {
 
     await gateway.start(job(canonicalWorktree), "goal", undefined);
 
-    expect(calls[0]?.manifest).toBe(
-      join(canonicalWorktree, ".pi/conductor.yaml"),
-    );
+    expect(calls[0]?.manifest).toBe(await realpath(manifestPath));
   });
 
-  it("rejects a manifest path that escapes the worktree", async () => {
+  it("rejects a relative shared manifest path", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
-    await mkdir(join(dataDir, "jobs", "12", "worktree"), { recursive: true });
-    const gateway = new PiConductorGateway(
-      {
-        dataDir,
-        agentDir: join(dataDir, "agent"),
-        projects: {
-          "42": { ...project(), conductorManifest: "../outside.yaml" },
-        },
-        modelRegistry: {} as ModelRegistry,
-      },
-      fakeApi([]),
-    );
-
-    await expect(
-      gateway.start(
-        job(join(dataDir, "jobs", "12", "worktree")),
-        "goal",
-        undefined,
-      ),
-    ).rejects.toBeInstanceOf(ConductorIntegrationError);
+    expect(
+      () =>
+        new PiConductorGateway({
+          dataDir,
+          agentDir: join(dataDir, "agent"),
+          conductorManifest: ".pi/conductor.yaml",
+          modelRegistry: {} as ModelRegistry,
+        }),
+    ).toThrow("conductorManifest must be absolute");
   });
 
-  it("rejects an existing manifest symlink that escapes the worktree", async () => {
+  it("rejects an unavailable shared manifest before starting a run", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const worktree = join(dataDir, "jobs", "12", "worktree");
-    const outside = await mkdtemp(join(tmpdir(), "runner-conductor-outside-"));
-    await mkdir(join(worktree, ".pi"), { recursive: true });
-    const { symlink, writeFile } = await import("node:fs/promises");
-    await writeFile(join(outside, "conductor.yaml"), "manifest");
-    await symlink(
-      join(outside, "conductor.yaml"),
-      join(worktree, ".pi/conductor.yaml"),
-    );
+    await mkdir(worktree, { recursive: true });
     const calls: Array<{ manifest: string; options: unknown }> = [];
     const gateway = new PiConductorGateway(
       {
         dataDir,
         agentDir: join(dataDir, "agent"),
-        projects: { "42": project() },
+        conductorManifest: join(dataDir, "missing.yaml"),
         modelRegistry: {} as ModelRegistry,
       },
       fakeApi(calls),
@@ -242,18 +212,20 @@ describe("PiConductorGateway", () => {
 
     await expect(
       gateway.start(job(worktree), "goal", undefined),
-    ).rejects.toThrow("conductor manifest escapes the task worktree");
+    ).rejects.toThrow("configured conductor manifest is unavailable");
     expect(calls).toHaveLength(0);
   });
 
   it("rejects a persisted worktree outside the configured task-data root", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const outside = await mkdtemp(join(tmpdir(), "runner-conductor-outside-"));
+    const manifestPath = join(dataDir, "conductor.yaml");
+    await writeFile(manifestPath, "version: 2\nroles: []\n");
     const gateway = new PiConductorGateway(
       {
         dataDir,
         agentDir: join(dataDir, "agent"),
-        projects: { "42": project() },
+        conductorManifest: manifestPath,
         modelRegistry: {} as ModelRegistry,
       },
       fakeApi([]),
