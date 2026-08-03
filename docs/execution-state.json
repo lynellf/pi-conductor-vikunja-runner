@@ -12,6 +12,22 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-052",
+      "objective": "Accept Vikunja empty Kanban buckets whose tasks field is omitted while retaining strict validation for present task collections.",
+      "source_refs": [
+        "Production failure: invalid Vikunja response at kanbanBuckets[0].tasks: missing",
+        "Vikunja 2.4 empty Kanban bucket response omits the tasks property",
+        "docs/pi-conductor-vikunja-runner-spec.md §§6, 16, 17, 20, 23"
+      ],
+      "approval_evidence": [
+        "S-052-A1 PASS: the production-shaped Vikunja HTTP test includes an empty Kanban bucket with no tasks property and listReadyTasks continues flattening and selecting Ready tasks across pages.",
+        "S-052-A2 PASS: parseKanbanBucketTasks maps only an omitted tasks property to an empty collection; a present null task collection remains rejected as an invalid external response.",
+        "Independent verification: pnpm test:coverage passed 231 tests across 32 files with 85.57% statements and 77.06% branches; pnpm build, pnpm typecheck, pnpm lint, pnpm audit --prod, pnpm install --frozen-lockfile, and git diff --check passed. One unrelated timing-sensitive control test failed once, then passed twice in isolation and in the full rerun. No rendered UI changed; UI review was not required.",
+        "Whole-change review: correctness, readability, architecture, security, and performance review found no blocking issues; external bucket/task fields remain validated before use and no dependency, privilege, or state transition changed."
+      ],
+      "approved_at": "2026-08-03T05:07:00Z"
+    },
+    {
       "id": "S-051",
       "objective": "Parse Vikunja 2.4 manual-Kanban task responses as paginated buckets containing tasks instead of treating buckets as flat task objects.",
       "source_refs": [
@@ -753,10 +769,11 @@
       "S-048 remediation: failed claim move intents are terminally superseded before failed-job finalization; guarded expected-Running recovery intents prevent stale replay from resurrecting Ready or human-selected tasks, with observed-Ready and unreadable-re-read regressions.",
       "S-048 remediation follow-up: startup reconciliation now terminally suppresses pending non-Failed moves belonging to failed jobs before any remote replay; guarded Failed moves remain eligible, and regressions prove Ready is not resurrected or a failed task advanced to Review.",
       "S-049: moved conductor_manifest from each project to one required absolute runner-level setting shared by all repositories; production start/resume pass the canonical source path directly while keeping each worktree as cwd.",
-      "S-049: split shared conductor/model/prompt validation from per-repository clone validation, enabled read-only home access for the service account, and documented a no-copy ACL-based reinstall migration."
+      "S-049: split shared conductor/model/prompt validation from per-repository clone validation, enabled read-only home access for the service account, and documented a no-copy ACL-based reinstall migration.",
+      "S-052: accepted Vikunja empty Kanban buckets that omit tasks while preserving strict validation for every present task collection."
     ],
     "current_protection_notes": "Preserved host-generated .pi-conductor artifacts and all prior approved implementation slices. S-049 changes the controlling specification under explicit operator approval to make the existing shared manifest the only operator-maintained source; no project manifest or runner-profile copy remains. No rendered UI changed."
   },
   "blocked_reason": null,
-  "updated_at": "2026-08-03T02:57:30Z"
+  "updated_at": "2026-08-03T05:07:00Z"
 }
