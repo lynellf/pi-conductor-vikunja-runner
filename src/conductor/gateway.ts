@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
@@ -132,7 +133,7 @@ export class PiConductorGateway implements ConductorGateway {
       throw new ConductorIntegrationError("job has no conductor run ID");
     }
     const context = await this.contextFor(job);
-    const runsDir = this.runsDir(job);
+    const runsDir = this.runsDir(job, job.conductorRunId);
     const options: ResumeRunOptions = {
       // resumeRun restores the original goal from the durable conductor log.
       goal: "",
@@ -181,8 +182,14 @@ export class PiConductorGateway implements ConductorGateway {
     return { worktree: realWorktree, manifestPath };
   }
 
-  private runsDir(job: Job): string {
-    return join(this.dataDir, "conductor-runs", String(job.projectId));
+  private runsDir(job: Job, runId?: string): string {
+    const root = join(this.dataDir, "conductor-runs");
+    // Runs created before project-scoped telemetry stored their JSONL files at
+    // the root. Preserve crash recovery for an in-flight legacy deployment.
+    if (runId !== undefined && existsSync(join(root, `${runId}.jsonl`))) {
+      return root;
+    }
+    return join(root, String(job.projectId));
   }
 
   private createHost(

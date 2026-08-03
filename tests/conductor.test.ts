@@ -159,6 +159,33 @@ describe("PiConductorGateway", () => {
     );
   });
 
+  it("resumes a pre-partition run from the legacy central log directory", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
+    const worktree = join(dataDir, "jobs", "12", "worktree");
+    const manifestPath = join(dataDir, "conductor.yaml");
+    const legacyRunsDir = join(dataDir, "conductor-runs");
+    await mkdir(worktree, { recursive: true });
+    await mkdir(legacyRunsDir, { recursive: true });
+    await writeFile(manifestPath, "version: 2\nroles: []\n");
+    await writeFile(join(legacyRunsDir, "run-123.jsonl"), "{}\n");
+    const calls: Array<{ manifest: string; options: unknown }> = [];
+    const gateway = new PiConductorGateway(
+      {
+        dataDir,
+        agentDir: join(dataDir, "agent"),
+        conductorManifest: manifestPath,
+        modelRegistry: {} as ModelRegistry,
+      },
+      fakeApi(calls),
+    );
+
+    await gateway.resume(job(worktree, "run-123"), undefined);
+
+    expect(
+      (calls[0]?.options as { baseDir: string } | undefined)?.baseDir,
+    ).toBe(legacyRunsDir);
+  });
+
   it("accepts a canonical persisted worktree when dataDir is a symlink", async () => {
     const root = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const canonicalDataDir = join(root, "canonical");
