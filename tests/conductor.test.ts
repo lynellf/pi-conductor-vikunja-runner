@@ -126,7 +126,7 @@ describe("PiConductorGateway", () => {
       hostFactory: (context: unknown) => unknown;
     };
     expect(options.goal).toBe("Ship the fix");
-    expect(options.baseDir).toBe(join(dataDir, "conductor-runs"));
+    expect(options.baseDir).toBe(join(dataDir, "conductor-runs", "42"));
     expect(options.modelRegistry).toBeDefined();
     expect(options.hostFactory).toBeTypeOf("function");
   });
@@ -150,6 +150,9 @@ describe("PiConductorGateway", () => {
 
     await gateway.resume(job(worktree, "run-123"), undefined);
     expect(calls[0]?.manifest).toBe(`${await realpath(manifestPath)}#run-123`);
+    expect(
+      (calls[0]?.options as { baseDir: string } | undefined)?.baseDir,
+    ).toBe(join(dataDir, "conductor-runs", "42"));
 
     await expect(gateway.resume(job(worktree), undefined)).rejects.toThrow(
       "job has no conductor run ID",
