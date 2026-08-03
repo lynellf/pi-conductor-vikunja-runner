@@ -166,7 +166,8 @@ export const parseKanbanBucketTasks = (
 ): readonly CodingTask[] => {
   const source = object(value, path);
   const bucket = parseBucket(source, path, expectedViewId);
-  const tasks = array(required(source.tasks, `${path}.tasks`), `${path}.tasks`);
+  const tasks =
+    source.tasks === undefined ? [] : array(source.tasks, `${path}.tasks`);
   return tasks.map((value, index) => {
     const taskPath = `${path}.tasks[${index}]`;
     const taskSource = object(value, taskPath);

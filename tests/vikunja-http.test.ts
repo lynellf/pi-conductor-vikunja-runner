@@ -6,6 +6,7 @@ import {
   VikunjaHttpGateway,
   VikunjaResponseError,
 } from "../src/vikunja/http.js";
+import { parseKanbanBucketTasks } from "../src/vikunja/validation.js";
 
 const project = (): ProjectConfig =>
   parseConfig({
@@ -102,6 +103,7 @@ describe("VikunjaHttpGateway", () => {
       ) {
         return new Response(
           JSON.stringify([
+            buckets[2],
             {
               ...buckets[1],
               tasks: [{ ...task(10, 2), bucket_id: undefined }],
@@ -149,6 +151,16 @@ describe("VikunjaHttpGateway", () => {
     expect(
       calls.map(({ url }) => url.searchParams.get("page")).filter(Boolean),
     ).toEqual(["1", "2"]);
+  });
+
+  it("rejects a present malformed task collection on a kanban bucket", () => {
+    expect(() =>
+      parseKanbanBucketTasks(
+        { ...buckets[1], tasks: null },
+        "kanbanBuckets[0]",
+        8,
+      ),
+    ).toThrow(VikunjaResponseError);
   });
 
   it("retries transient reads with bounded exponential jitter before succeeding", async () => {
