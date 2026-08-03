@@ -433,7 +433,7 @@ describe("VikunjaHttpGateway", () => {
       url.includes("/views/8/buckets/3/tasks"),
     );
     expect(move).toBeDefined();
-    expect(move?.init.method).toBe("PUT");
+    expect(move?.init.method).toBe("POST");
     const assignment = requests.find(({ url }) =>
       url.endsWith("/tasks/10/assignees"),
     );
