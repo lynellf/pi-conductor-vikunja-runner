@@ -125,13 +125,22 @@ export class AnalyticsBridge {
       this.reporters = [];
       return;
     }
-    this.legacyReporter = undefined;
     const runsRoot = options.runsDir ?? join(options.dataDir, "conductor-runs");
+    if (options.projects === undefined) {
+      this.legacyReporter = defaultReporter(
+        options,
+        { cwd: options.dataDir, runsDir: runsRoot },
+        overflow,
+      );
+      this.reporters = [];
+      return;
+    }
+    this.legacyReporter = undefined;
     const factory =
       options.reporterFactory ??
       ((context: ProjectAnalyticsReporterOptions) =>
         defaultReporter(options, context, overflow));
-    this.reporters = (options.projects ?? []).map((project) => {
+    this.reporters = options.projects.map((project) => {
       const runsDir = join(runsRoot, String(project.id));
       const cwd = join(
         options.dataDir,
