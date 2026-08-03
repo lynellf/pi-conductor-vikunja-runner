@@ -17,7 +17,7 @@ import {
 } from "../src/domain/types.js";
 import { SqliteJobStore } from "../src/persistence/sqlite.js";
 import type { VikunjaGateway } from "../src/vikunja/gateway.js";
-import { VikunjaHttpGateway } from "../src/vikunja/http.js";
+import { VikunjaHttpError, VikunjaHttpGateway } from "../src/vikunja/http.js";
 
 const stores: SqliteJobStore[] = [];
 
@@ -773,7 +773,7 @@ describe("reconcileStartup", () => {
     > = {
       getTask: async () => task(3),
       listComments: async () => {
-        throw new Error("Vikunja unavailable");
+        throw new VikunjaHttpError("Vikunja unavailable", null, true);
       },
       moveTask: async () => undefined,
       postComment: async () => commentId(78),
@@ -1074,6 +1074,99 @@ describe("reconcileStartup", () => {
       "CLAIM_CONFLICT",
     );
     expect(comments[0]).toContain("preserved the task's current bucket");
+  });
+
+  it("classifies an interrupted claim before replaying its pending move", async () => {
+    const store = await openStore();
+    const claimed = await store.tryClaim(task(2));
+    if (claimed === null) throw new Error("claim unexpectedly failed");
+    const claimMoveKey = `job:${claimed.id}:claim:move`;
+    await store.recordMutationIntent({
+      jobId: claimed.id,
+      taskId: claimed.taskId,
+      operation: "move_task",
+      idempotencyKey: claimMoveKey,
+      request: { bucketId: 3, expectedBucketId: 2 },
+    });
+    let remote = task(2);
+    const moves: number[] = [];
+    const comments: string[] = [];
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "assignRunner" | "listComments" | "postComment"
+    > = {
+      getTask: async () => remote,
+      moveTask: async (_taskId, bucket) => {
+        moves.push(bucket);
+        remote = { ...remote, bucketId: bucket };
+      },
+      assignRunner: async () => undefined,
+      listComments: async () => [],
+      postComment: async (_taskId, body) => {
+        comments.push(body);
+        return commentId(403);
+      },
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({ jobsFailed: 1 });
+    expect(moves).toEqual([]);
+    expect(remote.bucketId).toBe(layout().buckets.Ready.id);
+    expect(await store.getMutationIntent(claimMoveKey)).toMatchObject({
+      state: "failed",
+    });
+    expect((await store.getJob(claimed.id))?.terminalErrorCode).toBe(
+      "CLAIM_CONFLICT",
+    );
+    expect(comments).toHaveLength(1);
+  });
+
+  it("marks permanent remote mutation errors failed", async () => {
+    const store = await openStore();
+    const intent = await store.recordMutationIntent({
+      jobId: null,
+      taskId: taskId(20),
+      operation: "post_comment",
+      idempotencyKey: "orphan:forbidden-comment",
+      request: { body: "must not retry forever" },
+    });
+    const forbidden = new VikunjaHttpError(
+      "Vikunja request failed: GET /tasks/20/comments (403)",
+      403,
+      false,
+    );
+    const gateway: Pick<
+      VikunjaGateway,
+      "getTask" | "moveTask" | "listComments" | "postComment"
+    > = {
+      getTask: async () => task(3),
+      moveTask: async () => undefined,
+      listComments: async () => {
+        throw forbidden;
+      },
+      postComment: async () => {
+        throw new Error("permanent failure must stop before posting");
+      },
+    };
+
+    const result = await reconcileStartup({
+      store,
+      gateway,
+      layouts: new Map([[projectId(42), layout()]]),
+    });
+
+    expect(result).toMatchObject({
+      mutationFailures: 1,
+      mutationsPending: 0,
+    });
+    expect(await store.getMutationIntent(intent.idempotencyKey)).toMatchObject({
+      state: "failed",
+    });
   });
 
   it("hydrates the real HTTP adapter before replaying route-dependent intents", async () => {
