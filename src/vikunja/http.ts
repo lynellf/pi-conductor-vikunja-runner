@@ -22,6 +22,7 @@ import {
   parseAssignee,
   parseBucket,
   parseComment,
+  parseKanbanBucketTasks,
   parseTask,
   parseTaskBucket,
   parseView,
@@ -192,12 +193,12 @@ export class VikunjaHttpGateway implements VikunjaGateway {
     const project = this.projects.get(projectEntry[0]);
     if (project === undefined)
       throw new VikunjaResponseError("project is unavailable");
-    const tasks = await this.listPaged(
+    const kanbanBuckets = await this.listPaged(
       `/projects/${project.id}/views/${layout.viewId}/tasks`,
-      "tasks",
+      "kanbanBuckets",
     );
-    const parsedTasks = tasks.map((task, index) =>
-      parseTask(task, `tasks[${index}]`),
+    const parsedTasks = kanbanBuckets.flatMap((bucket, index) =>
+      parseKanbanBucketTasks(bucket, `kanbanBuckets[${index}]`, layout.viewId),
     );
     for (const task of parsedTasks) {
       if (task.projectId !== project.id) {
