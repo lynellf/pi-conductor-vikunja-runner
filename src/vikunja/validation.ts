@@ -159,6 +159,30 @@ export const parseTask = (
   };
 };
 
+export const parseKanbanBucketTasks = (
+  value: unknown,
+  path: string,
+  expectedViewId: number,
+): readonly CodingTask[] => {
+  const source = object(value, path);
+  const bucket = parseBucket(source, path, expectedViewId);
+  const tasks = array(required(source.tasks, `${path}.tasks`), `${path}.tasks`);
+  return tasks.map((value, index) => {
+    const taskPath = `${path}.tasks[${index}]`;
+    const taskSource = object(value, taskPath);
+    if (taskSource.bucket_id !== undefined && taskSource.bucket_id !== null) {
+      const returnedBucketId = positiveInteger(
+        taskSource.bucket_id,
+        `${taskPath}.bucket_id`,
+      );
+      if (returnedBucketId !== bucket.id) {
+        throw responseError(taskPath, "task belongs to another bucket");
+      }
+    }
+    return parseTask(taskSource, taskPath, bucket.id);
+  });
+};
+
 export const parseComment = (
   value: unknown,
   path: string,

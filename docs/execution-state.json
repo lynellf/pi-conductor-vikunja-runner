@@ -12,6 +12,23 @@
   "active_slice": null,
   "approved_slices": [
     {
+      "id": "S-051",
+      "objective": "Parse Vikunja 2.4 manual-Kanban task responses as paginated buckets containing tasks instead of treating buckets as flat task objects.",
+      "source_refs": [
+        "Production failure: invalid Vikunja response at tasks[0].project_id because the first response element was a Kanban bucket",
+        "Vikunja 2.4 API: GET /projects/{project}/views/{view}/tasks returns buckets containing tasks for Kanban views",
+        "docs/pi-conductor-vikunja-runner-spec.md §§6, 16, 17, 20, 23"
+      ],
+      "approval_evidence": [
+        "S-051-A1 PASS: the Vikunja adapter flattens tasks from each validated Kanban bucket across response pages and continues selecting only tasks in the configured Ready bucket.",
+        "S-051-A2 PASS: each bucket is validated against the configured project view; nested tasks inherit an omitted bucket_id from their enclosing bucket, while contradictory task bucket IDs are rejected.",
+        "S-051-A3 PASS: tests/vikunja-http.test.ts uses the documented bucket-with-tasks response shape and reproduces the original tasks[0].project_id failure before the fix; adapter, polling, and runner-cycle tests pass afterward.",
+        "Independent verification: pnpm test:coverage passed 230 tests across 32 files with 85.57% statements and 76.95% branches; pnpm typecheck, pnpm build, pnpm lint, pnpm audit --prod, pnpm install --frozen-lockfile, and git diff --check passed. No rendered UI changed; UI review was not required.",
+        "Whole-change review: correctness, readability, architecture, security, and performance review found no blocking issues; external bucket/task fields remain validated before use and no dependency or privilege changed."
+      ],
+      "approved_at": "2026-08-03T05:02:00Z"
+    },
+    {
       "id": "S-050",
       "objective": "Align the runner's embedded Pi packages on one pi-conductor-compatible release line that recognizes every OpenAI Codex and OpenRouter model used by the shared conductor manifest.",
       "source_refs": [

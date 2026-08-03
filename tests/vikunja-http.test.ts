@@ -100,19 +100,31 @@ describe("VikunjaHttpGateway", () => {
         url.pathname.endsWith("/views/8/tasks") &&
         url.searchParams.get("page") === "1"
       ) {
-        return new Response(JSON.stringify([task(10, 2), task(11, 1)]), {
-          status: 200,
-          headers: { "x-pagination-total-pages": "2" },
-        });
+        return new Response(
+          JSON.stringify([
+            {
+              ...buckets[1],
+              tasks: [{ ...task(10, 2), bucket_id: undefined }],
+            },
+            { ...buckets[0], tasks: [task(11, 1)] },
+          ]),
+          {
+            status: 200,
+            headers: { "x-pagination-total-pages": "2" },
+          },
+        );
       }
       if (
         url.pathname.endsWith("/views/8/tasks") &&
         url.searchParams.get("page") === "2"
       ) {
-        return new Response(JSON.stringify([task(12, 2)]), {
-          status: 200,
-          headers: { "x-pagination-total-pages": "2" },
-        });
+        return new Response(
+          JSON.stringify([{ ...buckets[1], tasks: [task(12, 2)] }]),
+          {
+            status: 200,
+            headers: { "x-pagination-total-pages": "2" },
+          },
+        );
       }
       throw new Error(`unexpected request ${url}`);
     };
@@ -210,10 +222,13 @@ describe("VikunjaHttpGateway", () => {
       if (url.pathname.endsWith("/views/8/buckets"))
         return new Response(JSON.stringify(buckets), { status: 200 });
       if (url.pathname.endsWith("/views/8/tasks"))
-        return new Response(JSON.stringify([task(10, 2)]), {
-          status: 200,
-          headers: { "x-pagination-total-pages": "1" },
-        });
+        return new Response(
+          JSON.stringify([{ ...buckets[1], tasks: [task(10, 2)] }]),
+          {
+            status: 200,
+            headers: { "x-pagination-total-pages": "1" },
+          },
+        );
       if (url.pathname.includes("/buckets/3/tasks")) {
         moveAttempts += 1;
         return new Response("temporarily unavailable", { status: 503 });
@@ -353,10 +368,13 @@ describe("VikunjaHttpGateway", () => {
       const url = new URL(input.toString());
       requests.push({ url: url.toString(), init: init ?? {} });
       if (url.pathname.endsWith("/views/8/tasks")) {
-        return new Response(JSON.stringify([task(10, 2)]), {
-          status: 200,
-          headers: { "x-pagination-total-pages": "1" },
-        });
+        return new Response(
+          JSON.stringify([{ ...buckets[1], tasks: [task(10, 2)] }]),
+          {
+            status: 200,
+            headers: { "x-pagination-total-pages": "1" },
+          },
+        );
       }
       if (url.pathname.endsWith("/views"))
         return new Response(JSON.stringify([view]), { status: 200 });
