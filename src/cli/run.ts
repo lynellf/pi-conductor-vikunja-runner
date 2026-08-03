@@ -260,12 +260,12 @@ export const runDaemon = async (
       signal,
     });
 
-    let deferredJobIds = reconciliation.deferredJobIds ?? [];
     while (!signal.aborted) {
-      // A transient startup read leaves the durable job active and occupying
-      // the global slot. Retry only after a full poll interval has elapsed,
-      // then resume jobs whose remote state can now be confirmed.
-      if (cycles > 0 && deferredJobIds.length > 0) {
+      // Reconcile after every completed poll interval, not only after startup
+      // deferrals. A normal cycle can leave a durable remote mutation pending
+      // after a transport failure; waiting for a process restart would strand
+      // the task and violate the outbox contract.
+      if (cycles > 0) {
         try {
           const retriedReconciliation = await dependencies.reconcile({
             store: runtime.store,
@@ -283,7 +283,6 @@ export const runDaemon = async (
             signal,
           });
           reconciliation = retriedReconciliation;
-          deferredJobIds = retriedReconciliation.deferredJobIds ?? [];
           resumedJobs += retriedResumes;
         } catch (error) {
           dependencies.logError(
