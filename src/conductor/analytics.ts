@@ -22,7 +22,7 @@ export interface AnalyticsRecordSubscriber {
   subscribe(listener: (record: PersistedRecord) => void): () => void;
 }
 
-export const ANALYTICS_SOURCE = "vikunja-runner:conductor:record";
+export const ANALYTICS_SOURCE = "pi.events:conductor:record";
 
 export interface AnalyticsBridgeOptions {
   readonly dataDir: string;

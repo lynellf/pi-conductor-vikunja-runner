@@ -360,7 +360,7 @@ const reporter = createAnalyticsReporter({
   cwd: dataDir,
   runsDir: join(dataDir, "conductor-runs"),
   configPath: analyticsConfigPath,
-  source: "vikunja-runner:conductor:record",
+  source: "pi.events:conductor:record",
 });
 
 await reporter.backfill();

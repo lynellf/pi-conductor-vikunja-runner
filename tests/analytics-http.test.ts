@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { PersistedRecord } from "pi-conductor";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ANALYTICS_SOURCE,
   AnalyticsBridge,
   type AnalyticsRecordSubscriber,
 } from "../src/conductor/analytics.js";
@@ -118,7 +117,7 @@ describe("analytics HTTP compatibility", () => {
 
     const delivered = received.flatMap((value) => {
       const envelope = value as { source?: unknown; records?: unknown[] };
-      expect(envelope.source).toBe(ANALYTICS_SOURCE);
+      expect(envelope.source).toBe("pi.events:conductor:record");
       return envelope.records ?? [];
     });
     expect(delivered).toEqual(records);
