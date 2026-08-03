@@ -107,6 +107,12 @@ Do not delete `<data_dir>` while investigating. It contains:
 - task branches and worktrees
 - job metadata and analytics watermarks
 
+A failed claim trips a process-level circuit breaker after the runner records
+the failed job and its owner-visible comment. The daemon logs the original
+claim error and exits successfully so `Restart=on-failure` does not immediately
+claim the still-Ready task again. Correct the underlying problem, move the task
+out of Ready and back when a retry is desired, then restart the service.
+
 Read the task's stable error code and local JSON logs. Correct the underlying
 problem, then move the task from Failed or Review to Ready to create a new
 attempt. Retries reuse the preserved task branch and worktree by default.

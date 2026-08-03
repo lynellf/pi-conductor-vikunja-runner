@@ -137,6 +137,68 @@ describe("runner daemon", () => {
     ]);
   });
 
+  it("logs the underlying claim failure and stops before another claim cycle", async () => {
+    const controller = new AbortController();
+    const errors: Error[] = [];
+    let sleeps = 0;
+    const claimError = new Error(
+      "Vikunja request failed: POST /projects/42/views/8/buckets/3/tasks (405)",
+    );
+    const failedJob: Job = {
+      id: "failed-claim" as Job["id"],
+      taskId: taskId(10),
+      projectId: projectId(42),
+      attempt: 1,
+      state: "failed",
+      branch: null,
+      worktree: null,
+      conductorRunId: null,
+      createdAt: "2026-08-03T00:00:00.000Z",
+      updatedAt: "2026-08-03T00:00:01.000Z",
+      terminalErrorCode: "VIKUNJA_UNAVAILABLE",
+    };
+
+    const result = await runDaemon(
+      "/etc/runner.yaml",
+      {
+        loadConfig: async () => config(),
+        readCredential: async () => "credential",
+        createRuntime: async () => runtime(),
+        startAnalytics: async () => ({ shutdown: async () => undefined }),
+        validateLayouts: async () => new Map(),
+        reconcile: async () => ({
+          jobsChecked: 0,
+          jobsFailed: 0,
+          questionsInterrupted: 0,
+          manualOverrides: 0,
+          mutationsReplayed: 0,
+          mutationsPending: 0,
+          mutationFailures: 0,
+        }),
+        resumeJobs: async () => 0,
+        runCycle: async () => ({
+          poll: {
+            validatedProjects: [projectId(42)],
+            listedTasks: 1,
+            eligibleTaskIds: [taskId(10)],
+            claim: { status: "failed", job: failedJob, error: claimError },
+          },
+          execution: null,
+        }),
+        sleep: async () => {
+          sleeps += 1;
+          controller.abort();
+        },
+        logError: (error) => errors.push(error),
+      },
+      controller.signal,
+    );
+
+    expect(result.cycles).toBe(1);
+    expect(errors).toEqual([claimError]);
+    expect(sleeps).toBe(0);
+  });
+
   it("retries deferred recovery after a poll interval without requiring restart", async () => {
     const controller = new AbortController();
     const deferredJobId = "job-deferred" as Job["id"];

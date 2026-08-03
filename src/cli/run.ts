@@ -323,6 +323,17 @@ export const runDaemon = async (
           await cycle;
           break;
         }
+        if (outcome.poll.claim?.status === "failed") {
+          dependencies.logError(
+            outcome.poll.claim.error instanceof Error
+              ? outcome.poll.claim.error
+              : new Error("claim failed with an unknown error"),
+          );
+          // A terminal claim releases its local uniqueness constraint while
+          // the task may still be in Ready. Stop this process so systemd's
+          // on-failure policy does not create a new job and comment each poll.
+          break;
+        }
       } catch (error) {
         dependencies.logError(
           error instanceof Error ? error : new Error("unknown runner failure"),
