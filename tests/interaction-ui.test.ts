@@ -11,6 +11,7 @@ import {
 } from "../src/domain/types.js";
 import type { Question } from "../src/persistence/contracts.js";
 import type { VikunjaGateway } from "../src/vikunja/gateway.js";
+import { VikunjaHttpError } from "../src/vikunja/http.js";
 import { createVikunjaQuestionUi } from "../src/vikunja/interaction-ui.js";
 
 const job: Job = {
@@ -368,6 +369,41 @@ describe("createVikunjaQuestionUi", () => {
     ]);
   });
 
+  it("fails a question transition immediately on a permanent Vikunja error", async () => {
+    const dependencies = makeDependencies([[]]);
+    const forbidden = new VikunjaHttpError(
+      "Vikunja request failed: GET /tasks/12 (403)",
+      403,
+      false,
+    );
+    let sleeps = 0;
+    const ui = createVikunjaQuestionUi({} as never, {
+      ...dependencies,
+      gateway: {
+        ...dependencies.gateway,
+        getTask: async () => {
+          throw forbidden;
+        },
+      },
+      job,
+      layout,
+      ownerUserId: userId(1),
+      pollIntervalMs: 0,
+      sleep: async () => {
+        sleeps += 1;
+        throw new Error("permanent Vikunja errors must not be retried");
+      },
+    });
+
+    await expect(ui.input("Need a decision", undefined, {})).rejects.toBe(
+      forbidden,
+    );
+    expect(sleeps).toBe(0);
+    expect(dependencies.state.failedMutationKeys).toContain(
+      "job:job-1:question:question-1:waiting",
+    );
+  });
+
   it("keeps an accepted answer pending until Running is confirmed", async () => {
     const reply: TaskComment = {
       id: commentId(2),
@@ -389,7 +425,7 @@ describe("createVikunjaQuestionUi", () => {
           runningAttempts += 1;
           if (runningAttempts === 1) {
             stateDuringFailure = dependencies.state.activeQuestion.state;
-            throw new Error("temporary move failure");
+            throw new VikunjaHttpError("temporary move failure", null, true);
           }
         }
         dependencies.state.moves.push(bucket);

@@ -20,3 +20,11 @@ export class VikunjaResponseError extends Error {
     this.name = "VikunjaResponseError";
   }
 }
+
+/**
+ * External retry policy is defined once at the Vikunja boundary. Callers must
+ * not turn authorization, validation, or semantic response failures into
+ * unbounded retries after the HTTP adapter has classified them.
+ */
+export const isRetryableVikunjaError = (error: unknown): boolean =>
+  error instanceof VikunjaHttpError && error.retryable;
