@@ -1,8 +1,8 @@
-import { mkdir, mkdtemp, realpath, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
-import type { RunHandle } from "pi-conductor";
+import { type RunHandle, StubHost } from "pi-conductor";
 import { describe, expect, it } from "vitest";
 import {
   type ConductorApi,
@@ -54,6 +54,60 @@ const fakeApi = (
 });
 
 describe("PiConductorGateway", () => {
+  it("completes a real library run through the deterministic stub host", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-stub-"));
+    const agentDir = join(dataDir, "agent");
+    const worktree = join(dataDir, "jobs", "12", "worktree");
+    await mkdir(join(worktree, ".pi", "roles"), { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(worktree, ".pi", "conductor.yaml"),
+      [
+        "version: 1",
+        "roles:",
+        "  - name: orchestrator",
+        "    is_orchestrator: true",
+        "    system_prompt: .pi/roles/orchestrator.md",
+        "    tools: [end]",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      join(worktree, ".pi", "roles", "orchestrator.md"),
+      "Finish the deterministic test run.",
+    );
+    const gateway = new PiConductorGateway({
+      dataDir,
+      agentDir,
+      projects: { "42": project() },
+      hostFactory: (context, cwd) =>
+        new StubHost({
+          runId: context.runId,
+          log: context.log,
+          loadedManifest: context.loadedManifest,
+          cwd,
+          steps: [{ kind: "emit_end", reason: "completed" }],
+        }),
+    });
+
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    try {
+      const run = await gateway.start(job(worktree), "Ship the fix", undefined);
+
+      await expect(run.completion()).resolves.toMatchObject({
+        exitReason: "done",
+      });
+      expect(run.runStats().exitReason).toBe("done");
+    } finally {
+      if (previousAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      }
+    }
+  });
+
   it("starts a library run in the task worktree with isolated run storage", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "runner-conductor-data-"));
     const worktree = join(dataDir, "jobs", "12", "worktree");
