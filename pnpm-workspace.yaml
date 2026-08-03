@@ -3,9 +3,9 @@ minimumReleaseAgeExclude:
   - pi-conductor@0.12.0
   - pi-conductor-analytics-plugin@0.2.0
   # Pinned compatibility contracts from the controlling specification.
-  - '@earendil-works/pi-ai@0.83.0'
-  - '@earendil-works/pi-coding-agent@0.79.1'
-  - '@earendil-works/pi-tui@0.79.1'
+  - '@earendil-works/pi-ai@0.80.5'
+  - '@earendil-works/pi-coding-agent@0.80.5'
+  - '@earendil-works/pi-tui@0.80.5'
   - 'typebox@1.1.38'
 strictDepBuilds: true
 verifyDepsBeforeRun: warn
